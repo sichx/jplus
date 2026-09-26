@@ -41,6 +41,7 @@ struct SearchView: View {
             searchBar
             Divider()
             results
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationTitle("Search")
         .toolbar {

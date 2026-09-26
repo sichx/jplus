@@ -8,6 +8,9 @@ struct VersionDetailView: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.openURL) private var openURL
     @State private var query = IssueQuery()
+    @State private var highlights: VersionHighlights?
+    @State private var isLoadingHighlights = false
+    @State private var highlightsError: String?
 
     private var version: JiraVersion { route.version }
 
@@ -16,17 +19,24 @@ struct VersionDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
+        VSplitView {
+            ScrollView {
+                header
+            }
+            .frame(minHeight: 120, idealHeight: 380)
             issues
+                .frame(minHeight: 160)
         }
         .navigationTitle(version.name)
         .navigationSubtitle(route.project.name)
         .toolbar {
             ToolbarItemGroup(placement: .secondaryAction) {
                 Button("Refresh", systemImage: "arrow.clockwise") {
-                    Task { await run() }
+                    Task {
+                        async let issues: Void = run()
+                        async let notes: Void = loadHighlights()
+                        _ = await (issues, notes)
+                    }
                 }
                 .keyboardShortcut("r", modifiers: .command)
                 if let client = session.client {
@@ -37,6 +47,7 @@ struct VersionDetailView: View {
             }
         }
         .task { await run() }
+        .task { await loadHighlights() }
     }
 
     private var header: some View {
@@ -45,7 +56,7 @@ struct VersionDetailView: View {
                 Text(version.name).font(.title2.weight(.semibold))
                 VersionStateBadge(version: version)
             }
-            if let description = version.description, !description.isEmpty {
+            if let description = nonEmpty(version.description) ?? highlights?.description {
                 Text(description).foregroundStyle(.secondary).textSelection(.enabled)
             }
             HStack(spacing: 20) {
@@ -75,9 +86,67 @@ struct VersionDetailView: View {
                     .foregroundStyle(.secondary)
                 }
             }
+
+            highlightsSection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
+    }
+
+    @ViewBuilder
+    private var highlightsSection: some View {
+        if let highlights, highlights.hasContent, let content = highlights.content {
+            Divider().padding(.vertical, 4)
+            Text(nonEmpty(highlights.title) ?? "Version highlights")
+                .font(.headline)
+            ADFView(node: content)
+                .frame(maxWidth: 820, alignment: .leading)
+                .environment(\.openURL, OpenURLAction { url in
+                    // Ticket links on this site open in the app; anything else goes to the browser.
+                    if url.host() == session.client?.credentials.siteURL.host(),
+                       let key = IssueKey.parse(url.absoluteString) {
+                        onOpenIssue(key)
+                        return .handled
+                    }
+                    return .systemAction
+                })
+        } else if isLoadingHighlights {
+            Divider().padding(.vertical, 4)
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Loading version highlights…").foregroundStyle(.secondary)
+            }
+            .font(.callout)
+        } else if let highlightsError {
+            Divider().padding(.vertical, 4)
+            Label(highlightsError, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func nonEmpty(_ text: String?) -> String? {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return text
+    }
+
+    /// Fetches this version's highlights directly, so the detail never
+    /// depends on the list having finished loading them.
+    private func loadHighlights() async {
+        guard let client = session.client else { return }
+        isLoadingHighlights = highlights == nil
+        highlightsError = nil
+        defer { isLoadingHighlights = false }
+        do {
+            let cloudId = try await session.cloudId()
+            let found = try await client.versionHighlights(projectId: route.project.id, cloudId: cloudId, search: version.name)
+            highlights = found[version.id]
+        } catch {
+            if highlights == nil {
+                highlightsError = "Couldn't load version highlights: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func legend(_ color: Color, _ text: String) -> some View {
@@ -104,11 +173,13 @@ struct VersionDetailView: View {
             ContentUnavailableView("No Issues", systemImage: "shippingbox",
                                    description: Text("Nothing has this fix version yet."))
         } else {
-            IssueListView(issues: query.issues, onOpen: onOpenIssue)
-            Divider()
-            IssueListFooter(query: query) {
-                Task {
-                    if let client = session.client { await query.loadMore(using: client) }
+            VStack(spacing: 0) {
+                IssueListView(issues: query.issues, onOpen: onOpenIssue)
+                Divider()
+                IssueListFooter(query: query) {
+                    Task {
+                        if let client = session.client { await query.loadMore(using: client) }
+                    }
                 }
             }
         }

@@ -2,7 +2,7 @@ import Foundation
 
 /// Everything needed to talk to one Jira Cloud site as one user.
 /// Persisted as a single JSON blob in the Keychain.
-struct JiraCredentials: Codable, Equatable, Sendable {
+struct JiraCredentials: Codable, Hashable, Sendable {
     /// Site origin only, e.g. `https://acme.atlassian.net`.
     var siteURL: URL
     var email: String

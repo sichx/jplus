@@ -1,20 +1,33 @@
 import SwiftUI
 
-/// Circular user avatar with an initials fallback while loading or when
-/// the avatar URL is missing or unreachable.
+/// Circular avatar with an initials fallback while loading or when the
+/// avatar URL is missing or unreachable.
 struct AvatarView: View {
-    let user: JiraUser?
+    let url: URL?
+    let initials: String?
     var size: CGFloat = 24
 
+    init(user: JiraUser?, size: CGFloat = 24) {
+        self.url = user?.avatarURL
+        self.initials = user?.initials
+        self.size = size
+    }
+
+    init(url: URL?, initials: String?, size: CGFloat = 24) {
+        self.url = url
+        self.initials = initials
+        self.size = size
+    }
+
     var body: some View {
-        AsyncImage(url: user?.avatarURL) { phase in
+        AsyncImage(url: url) { phase in
             if let image = phase.image {
                 image.resizable().scaledToFill()
             } else {
                 ZStack {
                     Circle().fill(.tint.opacity(0.2))
-                    if let user {
-                        Text(user.initials)
+                    if let initials, !initials.isEmpty {
+                        Text(initials)
                             .font(.system(size: size * 0.4, weight: .semibold))
                             .foregroundStyle(.tint)
                     } else {

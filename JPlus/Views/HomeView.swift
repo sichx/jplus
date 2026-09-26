@@ -55,9 +55,10 @@ struct HomeView: View {
                 .help("Go to Issue (⌘L)")
             }
             ToolbarItem(placement: .primaryAction) {
-                Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
+                Button("Switch Account", systemImage: "person.2") {
                     session.signOut()
                 }
+                .help("Switch Account (⇧⌘A)")
             }
         }
         .onChange(of: selection) { path = NavigationPath() }

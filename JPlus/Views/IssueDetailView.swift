@@ -83,6 +83,8 @@ private struct IssueContentView: View {
             VStack(alignment: .leading, spacing: 20) {
                 header
                 metadata
+                EffortEstimateView(issue: issue)
+                    .id(issue.key)
                 Divider()
                 section("Description") {
                     if let description = fields.description, !description.children.isEmpty {

@@ -152,6 +152,70 @@ struct JiraClient: Sendable {
         return try await send(request)
     }
 
+    /// The site's cloud id, needed to build ARIs for the GraphQL gateway.
+    func cloudId() async throws -> String {
+        struct TenantInfo: Decodable { let cloudId: String }
+        let info: TenantInfo = try await get("/_edge/tenant_info")
+        return info.cloudId
+    }
+
+    /// "Version highlights" for a project's versions, keyed by version id.
+    /// Covers unreleased, released and archived versions, paging through all.
+    /// Pass `search` (a version name) to fetch just the matching versions.
+    func versionHighlights(projectId: String, cloudId: String, search: String? = nil) async throws -> [String: VersionHighlights] {
+        let query = """
+        query JPlusVersionHighlights($projectId: ID!, $filter: [JiraVersionStatus], $search: String, $after: String) {
+          jira {
+            versionsForProject(jiraProjectId: $projectId, filter: $filter, searchString: $search, first: 50, after: $after) {
+              pageInfo { hasNextPage endCursor }
+              edges { node {
+                versionId name description
+                richTextSection @optIn(to: "JiraVersionRichTextSection") { title content { json } }
+              } }
+            }
+          }
+        }
+        """
+        var baseVariables: [String: Any] = [
+            "projectId": "ari:cloud:jira:\(cloudId):project/\(projectId)",
+            "filter": ["UNRELEASED", "RELEASED", "ARCHIVED"],
+        ]
+        if let search, !search.isEmpty { baseVariables["search"] = search }
+
+        var result: [String: VersionHighlights] = [:]
+        var after: String?
+        var pages = 0
+        repeat {
+            var variables = baseVariables
+            if let after { variables["after"] = after }
+            let page: VersionHighlightsPage = try await graphQL(
+                operationName: "JPlusVersionHighlights",
+                query: query,
+                variables: variables,
+                experimentalAPIs: ["VersionsForProject"]
+            )
+            if let errors = page.errors, !errors.isEmpty, page.data == nil {
+                throw JiraError.http(status: 200, message: errors.map(\.message).joined(separator: " "))
+            }
+            guard let connection = page.data?.jira.versionsForProject else {
+                let message = page.errors?.map(\.message).joined(separator: " ") ?? "Empty GraphQL response."
+                throw JiraError.http(status: 200, message: message)
+            }
+            for edge in connection.edges {
+                let node = edge.node
+                result[node.versionId] = VersionHighlights(
+                    versionId: node.versionId,
+                    title: node.richTextSection?.title,
+                    content: node.richTextSection?.content?.json,
+                    description: node.description.flatMap { $0.isEmpty ? nil : $0 }
+                )
+            }
+            after = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : nil
+            pages += 1
+        } while after != nil && pages < 40
+        return result
+    }
+
     /// Web URL for an issue on this site.
     func browseURL(for issueKey: String) -> URL {
         credentials.siteURL.appending(path: "browse/\(issueKey)")
@@ -175,6 +239,21 @@ struct JiraClient: Sendable {
         var request = makeRequest(path: path, method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: json)
+        return try await send(request)
+    }
+
+    /// Atlassian's GraphQL gateway on the site domain accepts the same Basic auth.
+    func graphQL<T: Decodable>(operationName: String, query: String, variables: [String: Any], experimentalAPIs: [String] = []) async throws -> T {
+        var request = makeRequest(path: "/gateway/api/graphql", method: "POST")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !experimentalAPIs.isEmpty {
+            request.setValue(experimentalAPIs.joined(separator: ", "), forHTTPHeaderField: "X-ExperimentalApi")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "operationName": operationName,
+            "query": query,
+            "variables": variables,
+        ])
         return try await send(request)
     }
 

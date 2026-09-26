@@ -6,12 +6,19 @@ struct ContentView: View {
     var body: some View {
         switch session.state {
         case .restoring:
-            ProgressView("Connecting to Jira…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 16) {
+                AppIconView(size: 80)
+                ProgressView("Connecting to Jira…")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .signedOut:
-            SignInView()
+            AccountPickerView()
         case .signedIn(let user):
-            HomeView(user: user)
+            if let accountID = session.currentAccountID {
+                HomeView(user: user)
+                    .id(accountID)
+                    .defaultAppStorage(AccountDefaults.store(for: accountID))
+            }
         }
     }
 }

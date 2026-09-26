@@ -14,6 +14,7 @@ struct VersionsView: View {
 
     @Environment(SessionStore.self) private var session
     @AppStorage("versionsProjectKey") private var projectKey = ""
+    @AppStorage("versionsShowReleased") private var showReleased = false
     @AppStorage("versionsShowArchived") private var showArchived = false
 
     @State private var projects: [JiraProject] = []
@@ -62,6 +63,8 @@ struct VersionsView: View {
                 .frame(maxWidth: 380)
             }
             Spacer()
+            Toggle("Show released", isOn: $showReleased)
+                .toggleStyle(.checkbox)
             Toggle("Show archived", isOn: $showArchived)
                 .toggleStyle(.checkbox)
         }
@@ -87,10 +90,20 @@ struct VersionsView: View {
         } else if versions.isEmpty {
             ContentUnavailableView("No Versions", systemImage: "shippingbox",
                                    description: Text("\(projectKey) has no versions yet."))
+        } else if unreleased.isEmpty && !showReleased && !showArchived {
+            ContentUnavailableView {
+                Label("No Unreleased Versions", systemImage: "shippingbox")
+            } description: {
+                Text("\(projectKey) has \(released.count) released versions.")
+            } actions: {
+                Button("Show Released") { showReleased = true }
+            }
         } else {
             List {
                 section("Unreleased", unreleased)
-                section("Released", released)
+                if showReleased {
+                    section("Released", released)
+                }
                 if showArchived {
                     section("Archived", archived)
                 }
@@ -161,12 +174,6 @@ private struct VersionRow: View {
                 HStack(spacing: 8) {
                     Text(version.name).fontWeight(.medium)
                     VersionStateBadge(version: version)
-                }
-                if let description = version.description, !description.isEmpty {
-                    Text(description)
-                        .foregroundStyle(.secondary)
-                        .font(.callout)
-                        .lineLimit(2)
                 }
                 HStack(spacing: 14) {
                     if let day = version.releaseDay {

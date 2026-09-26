@@ -23,7 +23,8 @@ struct JPlusApp: App {
                 .disabled(!session.isSignedIn)
             }
             CommandGroup(after: .appSettings) {
-                Button("Sign Out…") { session.signOut() }
+                Button("Switch Account…") { session.signOut() }
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
                     .disabled(!session.isSignedIn)
             }
         }
