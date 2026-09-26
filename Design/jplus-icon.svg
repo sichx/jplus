@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>JPlus app icon</title>
+  <defs>
+    <!-- Tile: warm yellow, a touch brighter at the top -->
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFD83D"/>
+      <stop offset="1" stop-color="#FFB900"/>
+    </linearGradient>
+    <!-- Soft highlight near the top of the tile -->
+    <radialGradient id="highlight" cx="0.5" cy="0.08" r="0.75">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Mark: near-black with a slight sheen -->
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A2A2A"/>
+      <stop offset="1" stop-color="#0A0A0A"/>
+    </linearGradient>
+    <filter id="tileShadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+    <clipPath id="tileClip">
+      <rect x="100" y="100" width="824" height="824" rx="185"/>
+    </clipPath>
+  </defs>
+
+  <!-- Shadow on its own layer so the tile gradient stays smooth -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#000" filter="url(#tileShadow)"/>
+  <!-- Tile on Apple's 824px body grid -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <g clip-path="url(#tileClip)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#highlight)"/>
+  </g>
+  <!-- Hairline edge so the tile holds its shape on light backgrounds -->
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#000000" stroke-opacity="0.08" stroke-width="3"/>
+
+  <!-- Depth layer: the J in deep amber, offset down-right.
+       The layered, offset look nods to Jira's stacked mark without copying it. -->
+  <path d="M 646 256 V 596 A 150 150 0 0 1 346 596" fill="none" stroke="#C88A00" stroke-width="124"
+        stroke-linecap="round" transform="translate(24 24)"/>
+
+  <!-- Main mark: a bold J, centred on the tile -->
+  <path d="M 646 256 V 596 A 150 150 0 0 1 346 596" fill="none" stroke="url(#mark)" stroke-width="124"
+        stroke-linecap="round"/>
+</svg>
