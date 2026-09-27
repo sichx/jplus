@@ -10,6 +10,8 @@ struct HomeView: View {
 
     enum SidebarItem: Hashable {
         case myIssues
+        case mentions
+        case version(VersionRoute)
         case account
         case search
         case versions
@@ -21,6 +23,10 @@ struct HomeView: View {
     @State private var path = NavigationPath()
 
     @AppStorage("recentIssueKeys") private var recentKeysRaw = ""
+    /// Project chosen on the Versions screen; its versions nest in the sidebar.
+    @AppStorage("versionsProjectKey") private var versionsProjectKey = ""
+    @AppStorage("sidebarVersionsExpanded") private var versionsExpanded = true
+    @State private var sidebarVersions: [VersionRoute] = []
     /// How many recent issues the sidebar shows; grows with Load More.
     @State private var visibleRecentCount = HomeView.recentPageSize
     @State private var showPalette = false
@@ -57,6 +63,9 @@ struct HomeView: View {
             }
         }
         .onChange(of: selection) { path = NavigationPath() }
+        .task(id: versionsProjectKey.isEmpty ? recentProjectKey : versionsProjectKey) {
+            await loadSidebarVersions()
+        }
         .task {
             // Build or refresh the typo-tolerant search index in the background.
             if let client = session.client, let accountID = session.currentAccountID {
@@ -97,10 +106,19 @@ struct HomeView: View {
         VStack(spacing: 0) {
             sidebarHeader
             List(selection: $selection) {
+                DisclosureGroup(isExpanded: $versionsExpanded) {
+                    ForEach(sidebarVersions, id: \.version.id) { route in
+                        SidebarVersionRow(version: route.version)
+                            .tag(SidebarItem.version(route))
+                    }
+                } label: {
+                    Label("Versions", systemImage: "shippingbox")
+                        .tag(SidebarItem.versions)
+                }
                 Label("My Issues", systemImage: "person.crop.square")
                     .tag(SidebarItem.myIssues)
-                Label("Versions", systemImage: "shippingbox")
-                    .tag(SidebarItem.versions)
+                Label("Mentions", systemImage: "at")
+                    .tag(SidebarItem.mentions)
 
                 if !recentKeys.isEmpty {
                     Section("Recent Issues") {
@@ -267,6 +285,8 @@ struct HomeView: View {
         switch selection {
         case .myIssues:
             MyIssuesView(onOpenIssue: pushIssue)
+        case .mentions:
+            MentionsView(user: user, onOpenIssue: pushIssue)
         case .account:
             AccountView(user: user)
         case .search:
@@ -281,6 +301,9 @@ struct HomeView: View {
             VersionsView(suggestedProjectKey: recentProjectKey) { route in
                 path.append(route)
             }
+        case .version(let route):
+            VersionDetailView(route: route, onOpenIssue: pushIssue)
+                .id(route.version.id)
         case .newTicket:
             NewTicketView(suggestedProjectKey: recentProjectKey, onCreated: pushIssue)
         case .issue(let key):
@@ -293,6 +316,25 @@ struct HomeView: View {
     }
 
     // MARK: - Actions
+
+    /// The five lowest unreleased versions of the chosen project, by name
+    /// ("v1.9" before "v1.17").
+    private func loadSidebarVersions() async {
+        guard let client = session.client else { return }
+        let key = versionsProjectKey.isEmpty ? (recentProjectKey ?? "") : versionsProjectKey
+        do {
+            let projects = try await client.projects()
+            guard let project = projects.first(where: { $0.key == key }) ?? projects.first else { return }
+            let versions = try await client.versions(projectKey: project.key)
+            sidebarVersions = versions
+                .filter { !$0.released && !$0.archived }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                .prefix(5)
+                .map { VersionRoute(version: $0, project: project) }
+        } catch {
+            // Keep whatever was shown; the Versions screen reports errors.
+        }
+    }
 
     private func openSearch() {
         selection = .search
@@ -358,4 +400,20 @@ extension Notification.Name {
     static let jplusSearch = Notification.Name("co.interactivelabs.jplus.search")
     /// Posted by Go > Go to Issue or Version (⌘K).
     static let jplusCommandPalette = Notification.Name("co.interactivelabs.jplus.commandPalette")
+}
+
+/// A version nested under Versions in the sidebar.
+private struct SidebarVersionRow: View {
+    let version: JiraVersion
+
+    var body: some View {
+        Label(version.name, systemImage: "tag")
+            .lineLimit(1)
+            .help(helpText)
+    }
+
+    private var helpText: String {
+        guard let counts = version.issuesStatusForFixVersion, counts.total > 0 else { return version.name }
+        return "\(version.name) · \(counts.done) of \(counts.total) done"
+    }
 }

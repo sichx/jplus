@@ -26,12 +26,6 @@ struct JiraVersion: Decodable, Identifiable, Hashable, Sendable {
 
     var releaseDay: Date? { releaseDate.flatMap(JiraDay.parse) }
     var startDay: Date? { startDate.flatMap(JiraDay.parse) }
-
-    var isOverdue: Bool {
-        if let overdue { return overdue }
-        guard !released, let day = releaseDay else { return false }
-        return day < Calendar.current.startOfDay(for: .now)
-    }
 }
 
 struct VersionPage: Decodable, Sendable {

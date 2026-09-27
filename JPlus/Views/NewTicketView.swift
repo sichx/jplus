@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -29,6 +30,8 @@ struct NewTicketView: View {
     @State private var isCreating = false
     @State private var progress: String?
     @State private var errorMessage: String?
+    /// Local ⌘V handler, installed while this screen is visible.
+    @State private var pasteMonitor: Any?
 
     private var project: JiraProject? { projects.first { $0.key == projectKey } }
 
@@ -70,6 +73,8 @@ struct NewTicketView: View {
         }
         .task { await loadProjects() }
         .task(id: projectKey) { await loadIssueTypes() }
+        .onAppear(perform: installPasteMonitor)
+        .onDisappear(perform: removePasteMonitor)
     }
 
     // MARK: - Screenshot
@@ -116,13 +121,15 @@ struct NewTicketView: View {
                 .keyboardShortcut("v", modifiers: [.command, .shift])
                 if let screenshot {
                     Button("Remove", systemImage: "xmark.circle") { self.screenshot = nil }
-                    Spacer()
                     Text("\(screenshot.filename) · \(screenshot.sizeDescription)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
+                Spacer(minLength: 8)
+                draftButton
+                    .controlSize(.regular)
             }
             .controlSize(.small)
         }
@@ -203,26 +210,6 @@ struct NewTicketView: View {
 
     private var actions: some View {
         HStack(spacing: 12) {
-            if settings.hasClaudeAPIKey {
-                Button {
-                    Task { await draftWithClaude() }
-                } label: {
-                    if isDrafting {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text("Drafting…")
-                        }
-                    } else {
-                        Label("Draft with Claude", systemImage: "sparkles")
-                    }
-                }
-                .disabled(screenshot == nil || isDrafting || isCreating)
-                .help(screenshot == nil ? "Add a screenshot first" : "Fill summary, description and type from the screenshot")
-            } else {
-                Button("Enable Draft with Claude…", systemImage: "sparkles") { openSettings() }
-                    .help("Add a Claude API key in Settings")
-            }
-
             Spacer()
 
             if let progress {
@@ -242,6 +229,31 @@ struct NewTicketView: View {
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(!canCreate)
             .help("Create (⌘↩)")
+        }
+    }
+
+    /// Draft with Claude, shown beside the screenshot controls.
+    @ViewBuilder
+    private var draftButton: some View {
+        if settings.hasClaudeAPIKey {
+            Button {
+                Task { await draftWithClaude() }
+            } label: {
+                if isDrafting {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Drafting…")
+                    }
+                } else {
+                    Label("Draft with Claude", systemImage: "sparkles")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(screenshot == nil || isDrafting || isCreating)
+            .help(screenshot == nil ? "Add a screenshot first" : "Fill summary, description and type from the screenshot")
+        } else {
+            Button("Enable Draft with Claude…", systemImage: "sparkles") { openSettings() }
+                .help("Add a Claude API key in Settings")
         }
     }
 
@@ -290,6 +302,31 @@ struct NewTicketView: View {
         } else {
             issueTypeId = issueTypes.first?.id ?? ""
         }
+    }
+
+    // MARK: - ⌘V
+
+    /// ⌘V normally goes to whichever text field has focus, and a text field
+    /// can't take an image. This catches ⌘V first and attaches the image when
+    /// the clipboard holds one, letting ordinary text pastes through.
+    private func installPasteMonitor() {
+        guard pasteMonitor == nil else { return }
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "v" else { return event }
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                let isEditingText = event.window?.firstResponder is NSText
+                guard ScreenshotImport.shouldPasteImage(isEditingText: isEditingText) else { return false }
+                setScreenshot(ScreenshotImport.loadFromPasteboard(), failureMessage: "The clipboard image couldn't be read.")
+                return true
+            }
+            return handled ? nil : event
+        }
+    }
+
+    private func removePasteMonitor() {
+        if let pasteMonitor { NSEvent.removeMonitor(pasteMonitor) }
+        pasteMonitor = nil
     }
 
     // MARK: - Screenshot import

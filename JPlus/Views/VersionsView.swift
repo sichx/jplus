@@ -207,7 +207,6 @@ struct VersionStateBadge: View {
     private var style: (String, Color) {
         if version.archived { return ("ARCHIVED", .gray) }
         if version.released { return ("RELEASED", .green) }
-        if version.isOverdue { return ("OVERDUE", .red) }
         return ("UNRELEASED", .blue)
     }
 

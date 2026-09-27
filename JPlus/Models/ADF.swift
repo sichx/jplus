@@ -1,7 +1,7 @@
 import Foundation
 
 /// A loosely-typed JSON value, used for ADF node/mark attributes.
-enum JSONValue: Decodable, Hashable, Sendable {
+nonisolated enum JSONValue: Decodable, Hashable, Sendable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -48,7 +48,7 @@ enum JSONValue: Decodable, Hashable, Sendable {
 
 /// Atlassian Document Format node. Descriptions and comments in the v3 API
 /// are ADF trees rather than wiki markup.
-struct ADFNode: Decodable, Hashable, Sendable {
+nonisolated struct ADFNode: Decodable, Hashable, Sendable {
     let type: String
     let text: String?
     let attrs: [String: JSONValue]?
@@ -75,7 +75,7 @@ struct ADFNode: Decodable, Hashable, Sendable {
     }
 }
 
-struct ADFMark: Decodable, Hashable, Sendable {
+nonisolated struct ADFMark: Decodable, Hashable, Sendable {
     let type: String
     let attrs: [String: JSONValue]?
 

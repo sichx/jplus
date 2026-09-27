@@ -92,6 +92,27 @@ struct JiraClient: Sendable {
         return try await get("/rest/api/3/search/jql", query: query)
     }
 
+    /// Every comment on an issue, oldest first.
+    func allComments(issueKey: String) async throws -> [JiraIssue.Comment] {
+        struct Page: Decodable {
+            let comments: [JiraIssue.Comment]
+            let startAt: Int
+            let total: Int
+        }
+        var all: [JiraIssue.Comment] = []
+        var startAt = 0
+        repeat {
+            let page: Page = try await get("/rest/api/3/issue/\(issueKey)/comment", query: [
+                URLQueryItem(name: "startAt", value: String(startAt)),
+                URLQueryItem(name: "maxResults", value: "100"),
+            ])
+            all += page.comments
+            startAt += page.comments.count
+            if page.comments.isEmpty || startAt >= page.total { break }
+        } while true
+        return all
+    }
+
     /// Jira's fast estimate of how many issues match.
     func approximateCount(jql: String) async throws -> Int {
         struct Count: Decodable { let count: Int }
@@ -249,6 +270,11 @@ struct JiraClient: Sendable {
     /// Web URL for an issue on this site.
     func browseURL(for issueKey: String) -> URL {
         credentials.siteURL.appending(path: "browse/\(issueKey)")
+    }
+
+    /// Web URL for a version's release page, all issues tab.
+    func browseURL(projectKey: String, versionID: String) -> URL {
+        credentials.siteURL.appending(path: "projects/\(projectKey)/versions/\(versionID)/tab/release-report-all-issues")
     }
 
     /// Web URL for a JQL query on this site.

@@ -76,13 +76,10 @@ enum ScreenshotImport {
         return Screenshot(data: data, filename: url.lastPathComponent)
     }
 
-    /// Reads the general pasteboard directly (used by the Paste button).
-    static func loadFromPasteboard() -> Screenshot? {
-        let pasteboard = NSPasteboard.general
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] {
-            for url in urls {
-                if let shot = load(url: url) { return shot }
-            }
+    /// Reads an image from the pasteboard (used by the Paste button and ⌘V).
+    static func loadFromPasteboard(_ pasteboard: NSPasteboard = .general) -> Screenshot? {
+        for url in imageFileURLs(on: pasteboard) {
+            if let shot = load(url: url) { return shot }
         }
         for type in [NSPasteboard.PasteboardType.png, .tiff] {
             if let data = pasteboard.data(forType: type),
@@ -91,6 +88,27 @@ enum ScreenshotImport {
             }
         }
         return nil
+    }
+
+    /// Whether ⌘V should attach an image instead of pasting text.
+    /// - An image on the clipboard with no real text: take the image.
+    /// - An image file copied in Finder (its only text is the filename): take the image.
+    /// - Image and real text while typing in a field: leave it to the field.
+    static func shouldPasteImage(from pasteboard: NSPasteboard = .general, isEditingText: Bool) -> Bool {
+        let hasImageFile = !imageFileURLs(on: pasteboard).isEmpty
+        let hasImageData = pasteboard.availableType(from: [.png, .tiff]) != nil
+        guard hasImageFile || hasImageData else { return false }
+        if hasImageFile { return true }
+        let hasText = !(pasteboard.string(forType: .string) ?? "").isEmpty
+        return !(hasText && isEditingText)
+    }
+
+    private static func imageFileURLs(on pasteboard: NSPasteboard) -> [URL] {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.filter { url in
+            guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
+            return type.conforms(to: .image)
+        }
     }
 
     static func pngData(from cgImage: CGImage, maxDimension: CGFloat?) -> Data? {

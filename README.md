@@ -86,12 +86,25 @@ is sent to Anthropic unless you press that button.
 
 ## Navigation
 
-The top row of the sidebar has the JPlus name with Search (⌘F) and New Ticket
-(⌘N) as icons. Below are My Issues (open issues assigned to you, the default
-screen), Versions and your recent issues. As in ChatGPT's desktop app, the
+The top row of the sidebar has Search (⌘F) and New Ticket (⌘N) as icons.
+Below are Versions (expandable, with the five lowest unreleased versions of
+your project nested under it), My Issues (open issues assigned to you, the
+default screen), Mentions, and your recent issues. As in ChatGPT's desktop app, the
 signed-in user sits at the bottom of the sidebar: your name and site, with a
 menu for Account, Settings…, opening the site in a browser, and Switch
 Account…. ⌘K jumps to any issue or version.
+
+## Mentions
+
+Every place someone @-mentioned you, in a ticket's description or in a
+comment, newest first and grouped by day. Each entry shows who mentioned you,
+where, the ticket with its status, and the surrounding text with your name
+highlighted; a bare "cc: @you" line shows the whole comment instead. Click to
+open the ticket; right-click to open the exact comment in Jira. Jira's
+`text ~ currentUser()` finds candidate issues and the app scans their
+descriptions and comments for mention tags with your account ID; comments
+are timed by when they were written, description mentions by when the issue
+was created. Load Older Mentions pages further back.
 
 ## Search
 
@@ -184,6 +197,7 @@ JPlus/
     EffortEstimator.swift   Ticket -> effort estimate, plus the per-account estimate cache
     CommandPaletteModel.swift ⌘K search: key lookup, text search, version filter, title cache
     FuzzyMatcher.swift      Typo-tolerant word matching (edit distance, prefixes)
+    MentionsModel.swift     Finds @-mentions of you in descriptions and comments
     SearchIndex.swift       Local title index: parallel build, disk cache, incremental refresh
     FuzzySearchModel.swift  Ranks local and Jira matches, snippets, "Did you mean"
     SettingsStore.swift     Claude API key in the Keychain
@@ -193,6 +207,7 @@ JPlus/
     AccountFormView.swift   Add / edit form (verifies before saving)
     HomeView.swift          Split view shell, Linear-style sidebar, navigation stack
     MyIssuesView.swift      Open issues assigned to you
+    MentionsView.swift      @-mentions of you, grouped by day
     NewTicketView.swift     Screenshot well, fields, Draft with Claude, Create
     SettingsView.swift      Settings window (API key)
     FuzzySearchView.swift   Google-style search page (and the switch to JQL)
