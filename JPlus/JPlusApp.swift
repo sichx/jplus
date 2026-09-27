@@ -22,6 +22,18 @@ struct JPlusApp: App {
                 .keyboardShortcut("n", modifiers: .command)
                 .disabled(!session.isSignedIn)
             }
+            CommandMenu("Go") {
+                Button("Search") {
+                    NotificationCenter.default.post(name: .jplusSearch, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(!session.isSignedIn)
+                Button("Go to Issue or Version…") {
+                    NotificationCenter.default.post(name: .jplusCommandPalette, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: .command)
+                .disabled(!session.isSignedIn)
+            }
             CommandGroup(after: .appSettings) {
                 Button("Switch Account…") { session.signOut() }
                     .keyboardShortcut("a", modifiers: [.command, .shift])

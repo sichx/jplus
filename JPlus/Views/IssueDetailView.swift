@@ -13,6 +13,7 @@ struct IssueDetailView: View {
     }
 
     @State private var phase: Phase = .loading
+    @AppStorage("showIssueDetailsPane") private var showDetailsPane = true
 
     var body: some View {
         Group {
@@ -34,7 +35,26 @@ struct IssueDetailView: View {
         }
         .navigationTitle(key)
         .navigationSubtitle(subtitle)
+        .inspector(isPresented: $showDetailsPane) {
+            Group {
+                if case .loaded(let issue) = phase {
+                    IssueDetailsPane(issue: issue)
+                } else {
+                    Color.clear
+                }
+            }
+            .inspectorColumnWidth(min: 260, ideal: 320, max: 460)
+        }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showDetailsPane.toggle()
+                } label: {
+                    Label("Details", systemImage: "sidebar.trailing")
+                }
+                .help(showDetailsPane ? "Hide ticket details (⌥⌘0)" : "Show ticket details (⌥⌘0)")
+                .keyboardShortcut("0", modifiers: [.command, .option])
+            }
             ToolbarItemGroup(placement: .secondaryAction) {
                 Button("Refresh", systemImage: "arrow.clockwise") {
                     Task { await load() }
@@ -62,7 +82,11 @@ struct IssueDetailView: View {
         }
         phase = .loading
         do {
-            phase = .loaded(try await client.issue(key: key))
+            let issue = try await client.issue(key: key)
+            phase = .loaded(issue)
+            if let id = session.currentAccountID {
+                IssueTitleCache.save([issue.key: issue.fields.summary], in: AccountDefaults.store(for: id))
+            }
         } catch JiraError.notFound {
             phase = .failed("No issue with key \(key), or you don't have permission to view it.")
         } catch {
@@ -82,9 +106,6 @@ private struct IssueContentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
-                metadata
-                EffortEstimateView(issue: issue)
-                    .id(issue.key)
                 Divider()
                 section("Description") {
                     if let description = fields.description, !description.children.isEmpty {
@@ -123,33 +144,6 @@ private struct IssueContentView: View {
         }
     }
 
-    private var metadata: some View {
-        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 10) {
-            row("Assignee") { PersonCell(user: fields.assignee) }
-            row("Reporter") { PersonCell(user: fields.reporter) }
-            if let priority = fields.priority {
-                row("Priority") { PriorityLabel(name: priority.name) }
-            }
-            if !fields.labels.isEmpty {
-                row("Labels") { TagList(items: fields.labels) }
-            }
-            if !fields.components.isEmpty {
-                row("Components") { TagList(items: fields.components.map(\.name)) }
-            }
-            if !fields.fixVersions.isEmpty {
-                row("Fix versions") { TagList(items: fields.fixVersions.map(\.name)) }
-            }
-            if let parent = fields.parent {
-                row("Parent") {
-                    Text("\(parent.key)  \(parent.fields?.summary ?? "")").textSelection(.enabled)
-                }
-            }
-            row("Created") { Text(fields.created, format: .dateTime) }
-            row("Updated") { Text(fields.updated, format: .relative(presentation: .named)) }
-        }
-        .font(.callout)
-    }
-
     private var comments: some View {
         let list = fields.comment?.comments ?? []
         return section("Comments (\(fields.comment?.total ?? list.count))") {
@@ -165,18 +159,83 @@ private struct IssueContentView: View {
         }
     }
 
-    private func row<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
-        GridRow {
-            Text(label)
-                .foregroundStyle(.secondary)
-                .gridColumnAlignment(.trailing)
-            content()
-        }
-    }
-
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.headline)
+            content()
+        }
+    }
+}
+
+// MARK: - Details pane (right-hand column)
+
+/// Ticket fields and the effort estimate, shown in the right-hand column.
+private struct IssueDetailsPane: View {
+    let issue: JiraIssue
+
+    private var fields: JiraIssue.Fields { issue.fields }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Text("Details").font(.headline)
+                    Spacer()
+                    StatusBadge(status: fields.status)
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    field("Assignee") { PersonCell(user: fields.assignee, avatarSize: 20) }
+                    field("Reporter") { PersonCell(user: fields.reporter, avatarSize: 20) }
+                    field("Type") { IssueTypeBadge(name: fields.issueType.name) }
+                    if let priority = fields.priority {
+                        field("Priority") { PriorityLabel(name: priority.name) }
+                    }
+                    if let parent = fields.parent {
+                        field("Parent") {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(parent.key).font(.callout.monospaced())
+                                if let summary = parent.fields?.summary {
+                                    Text(summary).foregroundStyle(.secondary)
+                                }
+                            }
+                            .textSelection(.enabled)
+                        }
+                    }
+                    if !fields.fixVersions.isEmpty {
+                        field("Fix versions") { TagList(items: fields.fixVersions.map(\.name)) }
+                    }
+                    if !fields.components.isEmpty {
+                        field("Components") { TagList(items: fields.components.map(\.name)) }
+                    }
+                    if !fields.labels.isEmpty {
+                        field("Labels") { TagList(items: fields.labels) }
+                    }
+                    field("Created") {
+                        Text(fields.created.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    field("Updated") {
+                        Text(fields.updated, format: .relative(presentation: .named))
+                            .help(fields.updated.formatted(date: .abbreviated, time: .shortened))
+                    }
+                }
+                .font(.callout)
+
+                Divider()
+
+                EffortEstimateView(issue: issue)
+                    .id(issue.key)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func field<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
             content()
         }
     }

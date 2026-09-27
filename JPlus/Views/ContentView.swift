@@ -6,11 +6,9 @@ struct ContentView: View {
     var body: some View {
         switch session.state {
         case .restoring:
-            VStack(spacing: 16) {
-                AppIconView(size: 80)
-                ProgressView("Connecting to Jira…")
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Only lasts while saved accounts are read from the Keychain.
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .signedOut:
             AccountPickerView()
         case .signedIn(let user):

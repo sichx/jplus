@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// JQL search with presets, history, and paginated results.
-struct SearchView: View {
+/// Advanced search: raw JQL with presets, history, and paginated results.
+struct JQLSearchView: View {
     let onOpenIssue: (String) -> Void
+    let onSimpleSearch: () -> Void
 
     @Environment(SessionStore.self) private var session
     @Environment(\.openURL) private var openURL
@@ -43,7 +44,7 @@ struct SearchView: View {
             results
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle("Search")
+        .navigationTitle("Advanced Search")
         .toolbar {
             ToolbarItem(placement: .secondaryAction) {
                 if let client = session.client, query.hasRun {
@@ -54,13 +55,17 @@ struct SearchView: View {
             }
         }
         .task {
+            // An empty saved query would leave the screen blank; start from "assigned to me".
+            if jql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                jql = Preset.assignedToMe.jql
+            }
             if !query.hasRun { await run() }
         }
     }
 
     private var searchBar: some View {
         HStack(spacing: 8) {
-            TextField("JQL", text: $jql, prompt: Text("project = VPE AND status = \"In Progress\""))
+            TextField("JQL", text: $jql, prompt: Text("Type a JQL query, or pick a preset from the clock menu"))
                 .textFieldStyle(.roundedBorder)
                 .font(.body.monospaced())
                 .focused($fieldFocused)
@@ -95,6 +100,9 @@ struct SearchView: View {
 
             Button("Search") { Task { await run() } }
                 .disabled(jql.trimmingCharacters(in: .whitespaces).isEmpty || query.isLoading)
+
+            Button("Simple Search", action: onSimpleSearch)
+                .help("Back to plain-words search")
         }
         .padding(12)
     }

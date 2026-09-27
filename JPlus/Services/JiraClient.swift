@@ -79,6 +79,36 @@ struct JiraClient: Sendable {
         return try await get("/rest/api/3/search/jql", query: query)
     }
 
+    /// Runs a JQL query returning the given fields, decoded as `Issue`.
+    func search<Issue: Decodable>(jql: String, fields: [String], maxResults: Int = 50, nextPageToken: String? = nil) async throws -> SearchPage<Issue> {
+        var query = [
+            URLQueryItem(name: "jql", value: jql),
+            URLQueryItem(name: "fields", value: fields.joined(separator: ",")),
+            URLQueryItem(name: "maxResults", value: String(maxResults)),
+        ]
+        if let nextPageToken {
+            query.append(URLQueryItem(name: "nextPageToken", value: nextPageToken))
+        }
+        return try await get("/rest/api/3/search/jql", query: query)
+    }
+
+    /// Jira's fast estimate of how many issues match.
+    func approximateCount(jql: String) async throws -> Int {
+        struct Count: Decodable { let count: Int }
+        let result: Count = try await post("/rest/api/3/search/approximate-count", json: ["jql": jql])
+        return result.count
+    }
+
+    /// Creation date of the oldest visible issue.
+    func earliestCreated() async throws -> Date? {
+        struct Created: Decodable, Sendable {
+            let fields: Fields
+            struct Fields: Decodable, Sendable { let created: Date }
+        }
+        let page: SearchPage<Created> = try await search(jql: "created is not EMPTY ORDER BY created ASC", fields: ["created"], maxResults: 1)
+        return page.issues.first?.fields.created
+    }
+
     /// All projects visible to the user, ordered by name.
     func projects() async throws -> [JiraProject] {
         var all: [JiraProject] = []

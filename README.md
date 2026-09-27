@@ -7,9 +7,11 @@ A native macOS client for Jira Cloud, built with SwiftUI. Browsing is read-only;
 - [x] Sign in to a Jira Cloud site with an API token
 - [x] Saved accounts: logins are kept in the Keychain once Jira accepts them; pick, edit or delete them on the sign-in screen
 - [x] Account screen showing the signed-in user
-- [x] Open any issue by key (e.g. `vpe-5555`) or pasted browse URL; recents list
+- [x] Open any issue by key (e.g. `vpe-5555`) or pasted browse URL; recents list (7 shown, Load More / View All / Collapse)
+- [x] ⌘K palette: jump to an issue or version with live suggestions and title preview
 - [x] Issue detail: fields, description and comments (native ADF rendering)
-- [x] JQL search with presets, history, and paging
+- [x] Google-style search: plain words, typo-tolerant, ranked results with snippets and "Did you mean"; JQL kept as Advanced search
+- [x] Ticket details and effort estimate in a right-hand column (⌥⌘0 to show or hide)
 - [x] Versions per project with progress, drilling into each version's issues
 - [x] New Ticket: drop/paste/choose a screenshot, create the issue, attach the image
 - [x] Optional Draft with Claude: summary, description and type proposed from the screenshot
@@ -56,8 +58,11 @@ to delete it, and Add Account… for another site or user. The same user on the
 same site is never saved twice. When editing, leave the token blank to keep
 the saved one; edits are also verified before they're saved.
 
-The app reopens the last account you used. Switch Account (⇧⌘A, the toolbar,
-or the Account screen) returns to the list without forgetting anything. If
+The app reopens the last account you used straight away, using the name and
+avatar saved at the last sign-in, and checks the token with Jira in the
+background. The signed-in user is shown at the bottom of the sidebar. Switch
+Account (⇧⌘A, the toolbar, or the Account screen) returns to the list without
+forgetting anything. If
 Jira later rejects a saved token, the account is kept and marked so you can
 paste a new token instead of starting over.
 
@@ -78,6 +83,52 @@ screenshot plus your notes to the Claude Messages API (`claude-opus-5`, JSON
 structured output, server-side refusal fallback enabled) and fills in the
 summary, description and issue type for you to edit before creating. Nothing
 is sent to Anthropic unless you press that button.
+
+## Navigation
+
+The top row of the sidebar has the JPlus name with Search (⌘F) and New Ticket
+(⌘N) as icons. Below are My Issues (open issues assigned to you, the default
+screen), Versions and your recent issues. As in ChatGPT's desktop app, the
+signed-in user sits at the bottom of the sidebar: your name and site, with a
+menu for Account, Settings…, opening the site in a browser, and Switch
+Account…. ⌘K jumps to any issue or version.
+
+## Search
+
+Click the magnifying glass at the top of the sidebar, or press ⌘F.
+
+Type plain words; misspellings and half-typed words are fine
+(`downlod agrements` finds "Download terms from agreements section").
+Results are ranked in the app from two sources:
+
+- a local index of every issue title the account can see, matched with
+  typo tolerance (Jira's own search has no fuzzy matching);
+- Jira's word search over descriptions and comments.
+
+Each result shows its key, project, status, assignee and age, the title with
+matching words in bold, and a snippet of the description. "Did you mean"
+appears when your words only matched after correcting typos. Filter by
+project or to open issues; Advanced (JQL) switches to raw JQL.
+
+The index is built in the background at launch the first time (about 10
+seconds for 10,000 issues), saved in the app's container, refreshed with
+changed issues every couple of minutes, and rebuilt weekly.
+
+## Go to issue or version (⌘K)
+
+Press ⌘K (Go menu, or the magnifying glass in the toolbar) and start typing:
+
+- an issue key (`vpe-5636`), or just the number (`5636`) for the project of
+  your most recent issue;
+- a few words from a title (prefix search, so `leaderb` finds "leaderboard");
+- a version name (`v1.17`), which lists matching versions first.
+
+With nothing typed it shows your recent issues and the project's unreleased
+versions. Rows show the title, type and status; the highlighted row is
+previewed at the bottom with the full title, assignee and last update (or a
+version's release date and progress). ↑/↓ move, Return opens, Esc closes.
+Titles of issues you open are remembered per account so recents show them
+instantly.
 
 ## Effort estimates
 
@@ -131,20 +182,27 @@ JPlus/
     ClaudeClient.swift      Raw HTTP call to the Claude Messages API (structured JSON)
     ClaudeDrafter.swift     Screenshot -> ticket draft
     EffortEstimator.swift   Ticket -> effort estimate, plus the per-account estimate cache
+    CommandPaletteModel.swift ⌘K search: key lookup, text search, version filter, title cache
+    FuzzyMatcher.swift      Typo-tolerant word matching (edit distance, prefixes)
+    SearchIndex.swift       Local title index: parallel build, disk cache, incremental refresh
+    FuzzySearchModel.swift  Ranks local and Jira matches, snippets, "Did you mean"
     SettingsStore.swift     Claude API key in the Keychain
   Views/
     ContentView.swift       Routes on session state
     AccountPickerView.swift Sign-in screen: saved accounts with Edit and Delete
     AccountFormView.swift   Add / edit form (verifies before saving)
-    HomeView.swift          Split view shell, sidebar, navigation stack
+    HomeView.swift          Split view shell, Linear-style sidebar, navigation stack
+    MyIssuesView.swift      Open issues assigned to you
     NewTicketView.swift     Screenshot well, fields, Draft with Claude, Create
     SettingsView.swift      Settings window (API key)
-    SearchView.swift        JQL search bar, presets, results
+    FuzzySearchView.swift   Google-style search page (and the switch to JQL)
+    SearchView.swift        Advanced JQL search: presets, history, results
     VersionsView.swift      Project picker + grouped versions with progress bars
     VersionDetailView.swift One version's header and issues
     IssueListView.swift     Shared issue table + footer
     IssueDetailView.swift   Issue header, fields, description, comments
     EffortEstimateView.swift Effort estimate card on the issue detail
+    CommandPaletteView.swift ⌘K overlay: search box, suggestions, preview
     IssueBadges.swift       Status/type/priority badges, person cell, tags
     ADFView.swift           Native ADF renderer
     AccountView.swift       Signed-in user card

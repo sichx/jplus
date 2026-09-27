@@ -1,10 +1,34 @@
 import Foundation
 
 /// Response shape of `GET /rest/api/3/search/jql`.
-struct IssueSearchPage: Decodable, Sendable {
-    let issues: [IssueSummary]
+struct SearchPage<Issue: Decodable>: Decodable {
+    let issues: [Issue]
     let isLast: Bool?
     let nextPageToken: String?
+}
+
+typealias IssueSearchPage = SearchPage<IssueSummary>
+
+/// Search result with the description, for snippets.
+struct IssueSearchDetail: Decodable, Sendable {
+    let key: String
+    let fields: Fields
+
+    struct Fields: Decodable, Sendable {
+        let summary: String
+        let status: JiraIssue.Status
+        let issueType: JiraIssue.IssueType
+        let assignee: JiraUser?
+        let updated: Date
+        let description: ADFNode?
+
+        enum CodingKeys: String, CodingKey {
+            case summary, status, assignee, updated, description
+            case issueType = "issuetype"
+        }
+    }
+
+    static let requestedFields = ["summary", "status", "issuetype", "assignee", "updated", "description"]
 }
 
 /// Lightweight issue used in lists; a subset of `JiraIssue`.

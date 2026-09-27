@@ -29,6 +29,21 @@ struct SavedAccount: Codable, Identifiable, Hashable, Sendable {
 
     var label: String { displayName ?? credentials.email }
 
+    /// Profile saved from the last successful sign-in, so the app can open
+    /// straight away and verify in the background.
+    var cachedUser: JiraUser? {
+        guard let accountId, let displayName else { return nil }
+        return JiraUser(
+            accountId: accountId,
+            displayName: displayName,
+            emailAddress: credentials.email,
+            active: true,
+            timeZone: nil,
+            locale: nil,
+            avatarUrls: avatarURL.map { ["48x48": $0] }
+        )
+    }
+
     var initials: String {
         let source = displayName ?? credentials.email
         let parts = source.split(whereSeparator: { $0 == " " || $0 == "." || $0 == "@" }).prefix(2)

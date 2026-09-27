@@ -47,7 +47,10 @@ final class SessionStore {
 
     // MARK: - Launch
 
-    /// Loads saved accounts and signs back in to the last active one.
+    /// Loads saved accounts and reopens the last active one. With a saved
+    /// profile the app opens immediately and checks the token in the
+    /// background; without one (a login migrated from an old build) it
+    /// verifies first.
     func restore() async {
         guard case .restoring = state else { return }
         await accounts.load()
@@ -60,6 +63,14 @@ final class SessionStore {
             state = .signedOut
             return
         }
+
+        if let cached = account.cachedUser {
+            let client = JiraClient(credentials: account.credentials)
+            activate(account, client: client, user: cached)
+            Task { await verifyInBackground(accountID: account.id, client: client) }
+            return
+        }
+
         do {
             try await signIn(to: account)
         } catch let error as SignInError {
@@ -68,6 +79,26 @@ final class SessionStore {
         } catch {
             notice = "Couldn't sign in to \(account.label) automatically. \(error.localizedDescription)"
             state = .signedOut
+        }
+    }
+
+    /// Confirms the saved token still works after opening with the cached
+    /// profile. A rejected token returns to the account list; being offline
+    /// keeps the app open so cached screens still work.
+    private func verifyInBackground(accountID: UUID, client: JiraClient) async {
+        do {
+            let user = try await client.myself()
+            guard currentAccountID == accountID else { return }
+            try? await accounts.recordSuccess(id: accountID, user: user)
+            state = .signedIn(user)
+        } catch JiraError.unauthorized {
+            guard currentAccountID == accountID else { return }
+            try? await accounts.markRejected(id: accountID)
+            let label = accounts.account(id: accountID)?.label ?? "this account"
+            signOut()
+            notice = SignInError.tokenRejected(label).localizedDescription
+        } catch {
+            // Network trouble: stay signed in with the cached profile.
         }
     }
 

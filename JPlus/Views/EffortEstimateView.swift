@@ -24,7 +24,14 @@ struct EffortEstimateView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            header
+            VStack(alignment: .leading, spacing: 2) {
+                Label("Effort estimate", systemImage: "sparkles")
+                    .font(.headline)
+                Text("Working time for one engineer")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if let saved {
                 result(saved)
             } else if !isEstimating {
@@ -33,6 +40,7 @@ struct EffortEstimateView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
             if isEstimating {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -40,6 +48,7 @@ struct EffortEstimateView: View {
                 }
                 .font(.callout)
             }
+
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
@@ -47,38 +56,41 @@ struct EffortEstimateView: View {
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            actionButton
         }
-        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
         .onAppear {
             if let defaults { saved = EstimateCache.load(issue.key, from: defaults) }
         }
     }
 
-    // MARK: - Header
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Label("Effort estimate", systemImage: "sparkles")
-                .font(.headline)
-            Text("one engineer")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            if settings.hasClaudeAPIKey {
+    @ViewBuilder
+    private var actionButton: some View {
+        if settings.hasClaudeAPIKey {
+            if saved == nil {
                 Button {
                     Task { await estimate() }
                 } label: {
-                    Label(saved == nil ? "Estimate with Claude" : "Re-estimate",
-                          systemImage: saved == nil ? "sparkles" : "arrow.clockwise")
+                    Label("Estimate with Claude", systemImage: "sparkles").frame(maxWidth: .infinity)
                 }
-                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
                 .disabled(isEstimating)
                 .help("Sends this ticket's text and comments to Claude")
             } else {
-                Button("Add Claude API Key…") { openSettings() }
-                    .controlSize(.small)
+                Button {
+                    Task { await estimate() }
+                } label: {
+                    Label("Re-estimate", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
+                }
+                .disabled(isEstimating)
+                .help("Sends this ticket's text and comments to Claude again")
+            }
+        } else {
+            Button {
+                openSettings()
+            } label: {
+                Text("Add Claude API Key…").frame(maxWidth: .infinity)
             }
         }
     }
@@ -88,17 +100,14 @@ struct EffortEstimateView: View {
     private func result(_ saved: SavedEstimate) -> some View {
         let estimate = saved.estimate
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(Self.format(days: estimate.likelyDays))
-                    .font(.system(size: 26, weight: .semibold, design: .rounded))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Range \(Self.format(days: estimate.optimisticDays)) – \(Self.format(days: estimate.pessimisticDays))")
-                        .font(.callout)
-                    Text("Working time for one engineer")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                Text("Range \(Self.format(days: estimate.optimisticDays)) – \(Self.format(days: estimate.pessimisticDays))")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
                 SizeBadge(size: estimate.size)
                 ConfidenceBadge(confidence: estimate.confidence)
             }
@@ -132,18 +141,18 @@ struct EffortEstimateView: View {
                 .textSelection(.enabled)
                 .padding(.top, 6)
             } label: {
-                Text(showDetails ? "Hide details" : "Breakdown, assumptions and risks")
+                Text(showDetails ? "Hide details" : "Breakdown, risks, questions")
                     .font(.callout)
             }
 
-            HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 3) {
                 if isStale {
                     Label("Ticket changed since this estimate", systemImage: "exclamationmark.circle")
                         .foregroundStyle(.orange)
-                    Text("·").foregroundStyle(.tertiary)
                 }
                 Text("Estimated \(saved.createdAt.formatted(.relative(presentation: .named))) from the ticket text only")
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .font(.caption)
         }
