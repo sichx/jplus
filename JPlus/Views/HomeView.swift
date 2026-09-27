@@ -126,10 +126,16 @@ struct HomeView: View {
     /// Its own row, so nothing competes with the title bar for space.
     private var sidebarHeader: some View {
         HStack(spacing: 6) {
-            AppIconView(size: 18)
-            Text("JPlus")
+            JPlusMark()
+                .foregroundStyle(.secondary)
+                .frame(width: 11, height: 15)
+                .accessibilityHidden(true)
+            Text("for Atlassian\(Text("TM").font(.system(size: 7, weight: .semibold)).baselineOffset(6))")
                 .font(.system(size: 13, weight: .semibold))
-                .fixedSize()
+                .lineLimit(1)
+                // Shrink a little in a narrow sidebar instead of truncating.
+                .minimumScaleFactor(0.75)
+                .accessibilityLabel("for Atlassian trademark")
             Spacer(minLength: 6)
             headerIcon("magnifyingglass", help: "Search (⌘F)", isActive: selection == .search, action: openSearch)
             headerIcon("square.and.pencil", help: "New Ticket (⌘N)", isActive: selection == .newTicket, filled: true) {
