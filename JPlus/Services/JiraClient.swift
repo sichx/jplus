@@ -267,9 +267,77 @@ struct JiraClient: Sendable {
         return result
     }
 
+    /// Designs linked to an issue (Jira's "Designs" panel, filled by Figma for
+    /// Jira) and the media file id of each attachment. Neither is in REST.
+    /// A field that fails comes back empty as long as the other one loaded.
+    func issueExtras(key: String, cloudId: String) async throws -> IssueExtras {
+        let query = """
+        query JPlusIssueExtras($cloudId: ID!, $key: String!) {
+          jira {
+            issueByKey(cloudId: $cloudId, key: $key) {
+              designs(first: 50) @optIn(to: "GraphStoreIssueAssociatedDesign") {
+                edges { node { ... on DevOpsDesign { id displayName url inspectUrl status } } }
+              }
+              attachments(first: 100) {
+                edges { node { attachmentId mediaApiFileId } }
+              }
+            }
+          }
+        }
+        """
+        let response: IssueExtrasResponse = try await graphQL(
+            operationName: "JPlusIssueExtras",
+            query: query,
+            variables: ["cloudId": cloudId, "key": key],
+            // The design graph refuses queries that don't name the site.
+            headers: ["X-Query-Context": "ari:cloud:platform::site/\(cloudId)"]
+        )
+        guard let issue = response.data?.jira?.issueByKey else {
+            let message = response.errors?.map(\.message).joined(separator: " ") ?? "Empty GraphQL response."
+            throw JiraError.http(status: 200, message: message)
+        }
+
+        var extras = IssueExtras()
+        extras.designs = (issue.designs?.nodes ?? []).compactMap { node in
+            guard let id = node.id, let url = node.url.flatMap(URL.init(string:)) else { return nil }
+            let name = node.displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return IssueDesign(
+                id: id,
+                name: name.isEmpty ? url.absoluteString : name,
+                url: url,
+                inspectURL: node.inspectUrl.flatMap(URL.init(string:)),
+                isReadyForDev: node.status == "READY_FOR_DEVELOPMENT"
+            )
+        }
+        for node in issue.attachments?.nodes ?? [] {
+            if let mediaID = node.mediaApiFileId, let attachmentID = node.attachmentId {
+                extras.attachmentIDsByMediaID[mediaID] = attachmentID
+            }
+        }
+        return extras
+    }
+
+    /// An attachment's bytes. With `redirect=false` Jira sends the file itself
+    /// instead of redirecting to the media service with a short-lived token.
+    func attachmentContent(id: String) async throws -> Data {
+        var request = makeRequest(
+            path: "/rest/api/3/attachment/content/\(id)",
+            query: [URLQueryItem(name: "redirect", value: "false")],
+            method: "GET"
+        )
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 120
+        return try await sendData(request)
+    }
+
     /// Web URL for an issue on this site.
     func browseURL(for issueKey: String) -> URL {
         credentials.siteURL.appending(path: "browse/\(issueKey)")
+    }
+
+    /// Web URL for an attachment. In a browser it downloads the file.
+    func browseURL(for attachment: JiraIssue.Attachment) -> URL {
+        credentials.siteURL.appending(path: "secure/attachment/\(attachment.id)/\(attachment.filename)")
     }
 
     /// Web URL for a version's release page, all issues tab.
@@ -299,11 +367,14 @@ struct JiraClient: Sendable {
     }
 
     /// Atlassian's GraphQL gateway on the site domain accepts the same Basic auth.
-    func graphQL<T: Decodable>(operationName: String, query: String, variables: [String: Any], experimentalAPIs: [String] = []) async throws -> T {
+    func graphQL<T: Decodable>(operationName: String, query: String, variables: [String: Any], experimentalAPIs: [String] = [], headers: [String: String] = [:]) async throws -> T {
         var request = makeRequest(path: "/gateway/api/graphql", method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !experimentalAPIs.isEmpty {
             request.setValue(experimentalAPIs.joined(separator: ", "), forHTTPHeaderField: "X-ExperimentalApi")
+        }
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "operationName": operationName,
@@ -327,6 +398,15 @@ struct JiraClient: Sendable {
     }
 
     private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
+        let data = try await sendData(request)
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw JiraError.decoding(error)
+        }
+    }
+
+    private func sendData(_ request: URLRequest) async throws -> Data {
         let data: Data
         let response: URLResponse
         do {
@@ -338,12 +418,7 @@ struct JiraClient: Sendable {
         guard let http = response as? HTTPURLResponse else { throw JiraError.invalidResponse }
 
         switch http.statusCode {
-        case 200..<300:
-            do {
-                return try decoder.decode(T.self, from: data)
-            } catch {
-                throw JiraError.decoding(error)
-            }
+        case 200..<300: return data
         case 401: throw JiraError.unauthorized
         case 403: throw JiraError.forbidden
         case 404: throw JiraError.notFound

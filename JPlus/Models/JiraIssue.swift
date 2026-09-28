@@ -21,11 +21,13 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
         let fixVersions: [Named]
         let parent: Parent?
         let comment: CommentPage?
+        let attachments: [Attachment]?
 
         enum CodingKeys: String, CodingKey {
             case summary, description, status, priority, assignee, reporter
             case created, updated, labels, components, fixVersions, parent, comment
             case issueType = "issuetype"
+            case attachments = "attachment"
         }
     }
 
@@ -75,10 +77,21 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
         let updated: Date
     }
 
+    /// A file attached to the issue, including images pasted into the
+    /// description or a comment.
+    struct Attachment: Decodable, Identifiable, Hashable, Sendable {
+        let id: String
+        let filename: String
+        let mimeType: String?
+        let size: Int?
+
+        var isImage: Bool { mimeType?.hasPrefix("image/") == true }
+    }
+
     /// Field list requested from the API; keep in sync with `Fields`.
     static let requestedFields = [
         "summary", "description", "status", "issuetype", "priority", "assignee", "reporter",
-        "created", "updated", "labels", "components", "fixVersions", "parent", "comment",
+        "created", "updated", "labels", "components", "fixVersions", "parent", "comment", "attachment",
     ]
 }
 

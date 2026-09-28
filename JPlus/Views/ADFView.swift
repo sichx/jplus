@@ -6,9 +6,55 @@ import SwiftUI
 struct ADFView: View {
     let node: ADFNode
 
+    @Environment(\.adfMedia) private var media
+    @Environment(\.openURL) private var openURL
+
     var body: some View {
         ADFBlocks(nodes: node.type == "doc" ? node.children : [node])
+            .environment(\.openURL, media == nil ? openURL : OpenURLAction { url in
+                // Links to this issue's attachments preview in the app; every other link goes on as before.
+                if let media, let attachment = media.attachment(linkedBy: url) {
+                    Task { await media.preview(attachment) }
+                } else {
+                    openURL(url)
+                }
+                return .handled
+            })
     }
+}
+
+/// What ADF media nodes need to show an issue's attachments. The issue
+/// detail provides it; without it, media nodes render as plain labels.
+struct ADFMediaContext {
+    let client: JiraClient
+    let attachments: [JiraIssue.Attachment]
+    /// Media file id → attachment id, from the GraphQL gateway.
+    let attachmentIDsByMediaID: [String: String]
+    /// Opens an attachment in Quick Look.
+    let preview: @MainActor (JiraIssue.Attachment) async -> Void
+
+    /// Matches on media id when the gateway supplied the mapping, otherwise
+    /// on file name, which Jira's editor uses as an image's alt text.
+    func attachment(for media: ADFNode) -> JiraIssue.Attachment? {
+        if let mediaID = media.attr("id"), let attachmentID = attachmentIDsByMediaID[mediaID],
+           let attachment = attachments.first(where: { $0.id == attachmentID }) {
+            return attachment
+        }
+        guard let alt = media.attr("alt") else { return nil }
+        return attachments.first { $0.filename == alt }
+    }
+
+    /// The attachment a `…/secure/attachment/<id>/…` link on this site points to.
+    func attachment(linkedBy url: URL) -> JiraIssue.Attachment? {
+        let parts = url.pathComponents
+        guard url.host() == client.credentials.siteURL.host(), parts.count >= 4,
+              parts[1] == "secure", parts[2] == "attachment" else { return nil }
+        return attachments.first { $0.id == parts[3] }
+    }
+}
+
+extension EnvironmentValues {
+    @Entry var adfMedia: ADFMediaContext? = nil
 }
 
 private struct ADFBlocks: View {
@@ -27,18 +73,20 @@ private struct ADFBlocks: View {
 private struct ADFBlock: View {
     let node: ADFNode
 
+    @Environment(\.adfMedia) private var media
+
     var body: some View {
         switch node.type {
         case "paragraph":
             if node.children.isEmpty {
                 Color.clear.frame(height: 4)
             } else {
-                Text(ADFInline.attributedString(node.children))
+                Text(ADFInline.attributedString(node.children, media: media))
                     .textSelection(.enabled)
             }
 
         case "heading":
-            Text(ADFInline.attributedString(node.children))
+            Text(ADFInline.attributedString(node.children, media: media))
                 .font(headingFont(level: node.intAttr("level") ?? 3))
                 .padding(.top, 4)
                 .textSelection(.enabled)
@@ -81,10 +129,18 @@ private struct ADFBlock: View {
         case "table":
             tableView(rows: node.children)
 
-        case "mediaSingle", "mediaGroup", "mediaInline", "media":
-            Label(node.attr("alt") ?? "Attachment", systemImage: "paperclip")
-                .foregroundStyle(.secondary)
-                .font(.callout)
+        case "mediaSingle":
+            ADFMediaSingle(node: node)
+
+        case "mediaGroup":
+            FlowLayout(spacing: 8) {
+                ForEach(Array(node.children.enumerated()), id: \.offset) { _, media in
+                    ADFMediaView(media: media, isThumbnail: true)
+                }
+            }
+
+        case "media", "mediaInline":
+            ADFMediaView(media: node)
 
         case "taskList":
             VStack(alignment: .leading, spacing: 4) {
@@ -92,7 +148,7 @@ private struct ADFBlock: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Image(systemName: item.attr("state") == "DONE" ? "checkmark.square.fill" : "square")
                             .foregroundStyle(item.attr("state") == "DONE" ? Color.accentColor : .secondary)
-                        Text(ADFInline.attributedString(item.children)).textSelection(.enabled)
+                        Text(ADFInline.attributedString(item.children, media: media)).textSelection(.enabled)
                     }
                 }
             }
@@ -108,7 +164,7 @@ private struct ADFBlock: View {
                     Text(text)
                 }
             } else if node.children.allSatisfy(ADFInline.isInline) {
-                Text(ADFInline.attributedString(node.children)).textSelection(.enabled)
+                Text(ADFInline.attributedString(node.children, media: media)).textSelection(.enabled)
             } else {
                 ADFBlocks(nodes: node.children)
             }
@@ -173,13 +229,215 @@ private struct ADFBlock: View {
     }
 }
 
+// MARK: - Media
+
+/// An image or file on its own line, sized and aligned as in Jira.
+private struct ADFMediaSingle: View {
+    let node: ADFNode
+
+    @Environment(\.adfMedia) private var media
+
+    var body: some View {
+        VStack(alignment: alignment.horizontal, spacing: 4) {
+            if let item = node.children.first(where: { $0.type == "media" }) {
+                ADFMediaView(media: item, maxWidth: width(of: item))
+            }
+            if let caption = node.children.first(where: { $0.type == "caption" }), !caption.children.isEmpty {
+                Text(ADFInline.attributedString(caption.children, media: media))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
+    private var alignment: Alignment {
+        switch node.attr("layout") {
+        case "align-start", "wrap-left": return .leading
+        case "align-end", "wrap-right": return .trailing
+        default: return .center
+        }
+    }
+
+    /// The width chosen in Jira's editor: pixels, or in older content a
+    /// percentage of the 760 pt text column. Wide layouts use the image's own width.
+    private func width(of item: ADFNode) -> CGFloat? {
+        let natural = item.intAttr("width").map(CGFloat.init)
+        if ["wide", "full-width"].contains(node.attr("layout")) { return natural }
+        guard let width = node.intAttr("width").map(CGFloat.init) else { return natural }
+        return node.attr("widthType") == "pixel" ? width : 760 * width / 100
+    }
+}
+
+/// One `media` node: an attachment image, or a chip for any other file.
+/// Both open in Quick Look. Without a media context it's a plain label.
+private struct ADFMediaView: View {
+    let media: ADFNode
+    var maxWidth: CGFloat?
+    /// Fixed-size tile, for files shown side by side.
+    var isThumbnail = false
+
+    @Environment(\.adfMedia) private var context
+
+    var body: some View {
+        if let context, let attachment = context.attachment(for: media) {
+            if attachment.isImage {
+                AttachmentImage(attachment: attachment, context: context, aspectRatio: aspectRatio,
+                                maxWidth: maxWidth, isThumbnail: isThumbnail)
+            } else {
+                AttachmentChip(attachment: attachment, context: context)
+            }
+        } else {
+            Label(media.attr("alt") ?? "Attachment", systemImage: "paperclip")
+                .foregroundStyle(.secondary)
+                .font(.callout)
+        }
+    }
+
+    /// Width ÷ height from the node, so space is reserved before the image arrives.
+    private var aspectRatio: CGFloat? {
+        guard let width = media.intAttr("width"), let height = media.intAttr("height"),
+              width > 0, height > 0 else { return nil }
+        return CGFloat(width) / CGFloat(height)
+    }
+}
+
+/// An image attachment, downloaded with the account's credentials.
+private struct AttachmentImage: View {
+    let attachment: JiraIssue.Attachment
+    let context: ADFMediaContext
+    let aspectRatio: CGFloat?
+    let maxWidth: CGFloat?
+    let isThumbnail: Bool
+
+    @State private var image: NSImage?
+    @State private var failed = false
+
+    private let shape = RoundedRectangle(cornerRadius: 6)
+
+    var body: some View {
+        Group {
+            if let image {
+                Button {
+                    Task { await context.preview(attachment) }
+                } label: {
+                    picture(image)
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                .help("\(attachment.filename) — click to preview")
+                .accessibilityLabel(attachment.filename)
+                .contextMenu {
+                    Button("Quick Look") { Task { await context.preview(attachment) } }
+                    Button("Copy Image") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.writeObjects([image])
+                    }
+                }
+            } else if failed {
+                AttachmentChip(attachment: attachment, context: context)
+            } else {
+                placeholder
+            }
+        }
+        .task(id: attachment.id) {
+            do {
+                image = try await AttachmentStore.shared.image(for: attachment, using: context.client)
+            } catch {
+                failed = true
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func picture(_ image: NSImage) -> some View {
+        if isThumbnail {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 160, height: 120)
+                .clipShape(shape)
+                .overlay(shape.strokeBorder(.quaternary))
+        } else {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .clipShape(shape)
+                .overlay(shape.strokeBorder(.quaternary))
+                .frame(maxWidth: maxWidth ?? image.size.width)
+        }
+    }
+
+    @ViewBuilder
+    private var placeholder: some View {
+        let tile = shape.fill(.quaternary.opacity(0.5)).overlay { ProgressView().controlSize(.small) }
+        if isThumbnail {
+            tile.frame(width: 160, height: 120)
+        } else {
+            tile.aspectRatio(aspectRatio ?? 4 / 3, contentMode: .fit)
+                .frame(maxWidth: maxWidth ?? 320)
+        }
+    }
+}
+
+/// Any other attachment: icon, file name and size.
+private struct AttachmentChip: View {
+    let attachment: JiraIssue.Attachment
+    let context: ADFMediaContext
+
+    @State private var isOpening = false
+
+    var body: some View {
+        Button {
+            Task {
+                isOpening = true
+                await context.preview(attachment)
+                isOpening = false
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if isOpening {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: symbol).foregroundStyle(.secondary)
+                }
+                Text(attachment.filename).lineLimit(1)
+                if let size = attachment.size {
+                    Text(Int64(size), format: .byteCount(style: .file))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .disabled(isOpening)
+        .help("Preview \(attachment.filename)")
+    }
+
+    private var symbol: String {
+        let type = attachment.mimeType ?? ""
+        let name = attachment.filename.lowercased()
+        if type.hasPrefix("image/") { return "photo" }
+        if type.hasPrefix("video/") { return "film" }
+        if type == "application/pdf" { return "doc.richtext" }
+        if type.contains("spreadsheet") || type == "text/csv" || name.hasSuffix(".csv") { return "tablecells" }
+        if type.contains("zip") { return "doc.zipper" }
+        return "doc"
+    }
+}
+
 /// Inline (text-level) ADF → AttributedString.
 enum ADFInline {
-    static let inlineTypes: Set<String> = ["text", "hardBreak", "mention", "emoji", "inlineCard", "status", "date"]
+    static let inlineTypes: Set<String> = ["text", "hardBreak", "mention", "emoji", "inlineCard", "status", "date", "mediaInline"]
 
     static func isInline(_ node: ADFNode) -> Bool { inlineTypes.contains(node.type) }
 
-    static func attributedString(_ nodes: [ADFNode]) -> AttributedString {
+    /// `media` resolves attached files named in the text; without it they're plain text.
+    static func attributedString(_ nodes: [ADFNode], media: ADFMediaContext? = nil) -> AttributedString {
         var result = AttributedString()
         for node in nodes {
             switch node.type {
@@ -209,8 +467,20 @@ enum ADFInline {
                     let date = Date(timeIntervalSince1970: millis / 1000)
                     result += AttributedString(date.formatted(date: .abbreviated, time: .omitted))
                 }
+            case "mediaInline":
+                // Jira draws these as chips with their own margin; keep them off the preceding word.
+                if let last = result.characters.last, !last.isWhitespace {
+                    result += AttributedString(" ")
+                }
+                if let media, let attachment = media.attachment(for: node) {
+                    var name = AttributedString(attachment.filename)
+                    name.link = media.client.browseURL(for: attachment)
+                    result += name
+                } else {
+                    result += AttributedString(node.attr("alt") ?? "Attachment")
+                }
             default:
-                result += attributedString(node.children)
+                result += attributedString(node.children, media: media)
             }
         }
         return result

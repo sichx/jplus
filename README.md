@@ -10,6 +10,8 @@ A native macOS client for Jira Cloud, built with SwiftUI. Browsing is read-only;
 - [x] Open any issue by key (e.g. `vpe-5555`) or pasted browse URL; recents list (7 shown, Load More / View All / Collapse)
 - [x] ⌘K palette: jump to an issue or version with live suggestions and title preview
 - [x] Issue detail: fields, description and comments (native ADF rendering)
+- [x] Images and files attached in descriptions and comments, shown inline; click to Quick Look
+- [x] Linked Figma designs on the issue detail, with Open in Figma and Dev Mode
 - [x] Google-style search: plain words, typo-tolerant, ranked results with snippets and "Did you mean"; JQL kept as Advanced search
 - [x] Ticket details and effort estimate in a right-hand column (⌥⌘0 to show or hide)
 - [x] Versions per project with progress, drilling into each version's issues
@@ -17,7 +19,7 @@ A native macOS client for Jira Cloud, built with SwiftUI. Browsing is read-only;
 - [x] Optional Draft with Claude: summary, description and type proposed from the screenshot
 - [x] Effort estimate on each ticket: Claude sizes the work for one engineer, with range, breakdown, risks and open questions
 - [ ] Boards and sprints
-- [ ] Attachments and inline images
+- [ ] A list of all of an issue's attachments (only those placed in the text show today)
 
 ## Requirements
 
@@ -143,6 +145,27 @@ version's release date and progress). ↑/↓ move, Return opens, Esc closes.
 Titles of issues you open are remembered per account so recents show them
 instantly.
 
+## Images, attachments and designs
+
+Images pasted into a description or comment are drawn in place, at the width
+and alignment set in Jira's editor; other files named in the text (a
+spreadsheet, a PDF) appear as links or chips. Click any of them to open it in
+Quick Look. Files are fetched with the account's token from
+`/rest/api/3/attachment/content/{id}?redirect=false` and kept in the app's
+temporary folder, so they open instantly on later visits.
+
+When a design is linked through Figma for Jira, a Designs section follows the
+description: the design's name, whether it's Ready for dev, and buttons to
+open it in Figma or in Figma's Dev Mode (right-click to copy the link).
+
+Neither designs nor the link between an image in the text and its attachment
+are in the REST API; both come from Jira's GraphQL gateway in one query
+(`issueByKey` → `designs` and `attachments { mediaApiFileId }`). The designs
+field needs `@optIn(to: "GraphStoreIssueAssociatedDesign")` and an
+`X-Query-Context: ari:cloud:platform::site/{cloudId}` header. If the gateway
+fails, the issue still loads; images then fall back to matching their alt
+text, which Jira sets to the file name.
+
 ## Effort estimates
 
 Each ticket has an Effort estimate card. Press Estimate with Claude to send
@@ -184,6 +207,7 @@ JPlus/
     JiraProject.swift       Project list
     JiraVersion.swift       Versions with issue-status counts
     JiraCreate.swift        Issue types, create/attach responses, plain text -> ADF
+    IssueExtras.swift       Linked designs and attachment media ids (GraphQL)
     ADF.swift               Atlassian Document Format tree
   Services/
     KeychainStore.swift     Generic-password wrapper with legacy-keychain fallback
@@ -192,6 +216,7 @@ JPlus/
     AccountStore.swift      Saved accounts in the Keychain, migration, per-account defaults
     IssueQuery.swift        Paginated JQL result set for list views
     ScreenshotImport.swift  Drop/paste/file -> Screenshot (PNG normalisation, downscale)
+    AttachmentStore.swift   Downloads attachments once, caches files and decoded images
     ClaudeClient.swift      Raw HTTP call to the Claude Messages API (structured JSON)
     ClaudeDrafter.swift     Screenshot -> ticket draft
     EffortEstimator.swift   Ticket -> effort estimate, plus the per-account estimate cache
@@ -215,11 +240,11 @@ JPlus/
     VersionsView.swift      Project picker + grouped versions with progress bars
     VersionDetailView.swift One version's header and issues
     IssueListView.swift     Shared issue table + footer
-    IssueDetailView.swift   Issue header, fields, description, comments
+    IssueDetailView.swift   Issue header, fields, description, designs, comments
     EffortEstimateView.swift Effort estimate card on the issue detail
     CommandPaletteView.swift ⌘K overlay: search box, suggestions, preview
     IssueBadges.swift       Status/type/priority badges, person cell, tags
-    ADFView.swift           Native ADF renderer
+    ADFView.swift           Native ADF renderer, including images and attached files
     AccountView.swift       Signed-in user card
 ```
 

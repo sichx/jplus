@@ -1,3 +1,4 @@
+import QuickLook
 import SwiftUI
 
 /// Loads and displays one issue by key.
@@ -13,6 +14,7 @@ struct IssueDetailView: View {
     }
 
     @State private var phase: Phase = .loading
+    @State private var extras = IssueExtras()
     @AppStorage("showIssueDetailsPane") private var showDetailsPane = true
 
     var body: some View {
@@ -30,7 +32,7 @@ struct IssueDetailView: View {
                     Button("Try Again") { Task { await load() } }
                 }
             case .loaded(let issue):
-                IssueContentView(issue: issue)
+                IssueContentView(issue: issue, extras: extras)
             }
         }
         .navigationTitle(key)
@@ -81,6 +83,9 @@ struct IssueDetailView: View {
             return
         }
         phase = .loading
+        // Designs and attachment media ids come from the GraphQL gateway:
+        // fetched alongside the issue, but never holding it up or failing it.
+        async let fetchedExtras = loadExtras(using: client)
         do {
             let issue = try await client.issue(key: key)
             phase = .loaded(issue)
@@ -92,6 +97,17 @@ struct IssueDetailView: View {
         } catch {
             phase = .failed(error.localizedDescription)
         }
+        if let fetched = await fetchedExtras { extras = fetched }
+    }
+
+    /// Nil if the gateway fails, so a refresh keeps what's already shown.
+    private func loadExtras(using client: JiraClient) async -> IssueExtras? {
+        do {
+            let cloudId = try await session.cloudId()
+            return try await client.issueExtras(key: key, cloudId: cloudId)
+        } catch {
+            return nil
+        }
     }
 }
 
@@ -99,6 +115,11 @@ struct IssueDetailView: View {
 
 private struct IssueContentView: View {
     let issue: JiraIssue
+    let extras: IssueExtras
+
+    @Environment(SessionStore.self) private var session
+    @State private var previewURL: URL?
+    @State private var attachmentError: String?
 
     private var fields: JiraIssue.Fields { issue.fields }
 
@@ -114,6 +135,16 @@ private struct IssueContentView: View {
                         Text("No description").foregroundStyle(.secondary)
                     }
                 }
+                if !extras.designs.isEmpty {
+                    Divider()
+                    section("Designs (\(extras.designs.count))") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(extras.designs) { design in
+                                DesignRow(design: design)
+                            }
+                        }
+                    }
+                }
                 Divider()
                 comments
             }
@@ -121,6 +152,33 @@ private struct IssueContentView: View {
             .frame(maxWidth: 820, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .environment(\.adfMedia, mediaContext)
+        .quickLookPreview($previewURL)
+        .alert("Couldn't Open Attachment", isPresented: Binding(
+            get: { attachmentError != nil },
+            set: { if !$0 { attachmentError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(attachmentError ?? "")
+        }
+    }
+
+    /// Lets the description and comments show this issue's attachments.
+    private var mediaContext: ADFMediaContext? {
+        guard let client = session.client else { return nil }
+        return ADFMediaContext(
+            client: client,
+            attachments: fields.attachments ?? [],
+            attachmentIDsByMediaID: extras.attachmentIDsByMediaID,
+            preview: { attachment in
+                do {
+                    previewURL = try await AttachmentStore.shared.file(for: attachment, using: client)
+                } catch {
+                    attachmentError = error.localizedDescription
+                }
+            }
+        )
     }
 
     private var header: some View {
@@ -242,6 +300,67 @@ private struct IssueDetailsPane: View {
 }
 
 // MARK: - Pieces
+
+/// A linked design, with buttons to open it in Figma.
+private struct DesignRow: View {
+    let design: IssueDesign
+
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "pencil.and.ruler.fill")
+                .font(.title3)
+                .foregroundStyle(.purple)
+                .frame(width: 36, height: 36)
+                .background(.purple.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(design.name)
+                    .fontWeight(.medium)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                HStack(spacing: 8) {
+                    Text(design.providerName).foregroundStyle(.secondary)
+                    if design.isReadyForDev {
+                        ReadyForDevBadge()
+                    }
+                }
+                .font(.caption)
+            }
+            Spacer(minLength: 12)
+            if let inspectURL = design.inspectURL, inspectURL != design.url {
+                Button("Dev Mode") { openURL(inspectURL) }
+                    .help("Open in \(design.providerName)'s Dev Mode")
+            }
+            Button("Open in \(design.providerName)") { openURL(design.url) }
+                .help(design.url.absoluteString)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+        .contextMenu {
+            Button("Open in \(design.providerName)") { openURL(design.url) }
+            if let inspectURL = design.inspectURL, inspectURL != design.url {
+                Button("Open in Dev Mode") { openURL(inspectURL) }
+            }
+            Divider()
+            Button("Copy Link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(design.url.absoluteString, forType: .string)
+            }
+        }
+    }
+}
+
+private struct ReadyForDevBadge: View {
+    var body: some View {
+        Label("Ready for dev", systemImage: "chevron.left.forwardslash.chevron.right")
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.green.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+            .foregroundStyle(.green)
+    }
+}
 
 private struct CommentView: View {
     let comment: JiraIssue.Comment
