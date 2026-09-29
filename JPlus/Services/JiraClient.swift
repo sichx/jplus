@@ -317,16 +317,26 @@ struct JiraClient: Sendable {
         return extras
     }
 
-    /// An attachment's bytes. With `redirect=false` Jira sends the file itself
-    /// instead of redirecting to the media service with a short-lived token.
+    /// An attachment's bytes.
     func attachmentContent(id: String) async throws -> Data {
+        try await attachmentData("content", id: id, timeout: 120)
+    }
+
+    /// Jira's small preview of an image attachment (about 200 px).
+    func attachmentThumbnail(id: String) async throws -> Data {
+        try await attachmentData("thumbnail", id: id, timeout: 30)
+    }
+
+    /// With `redirect=false` Jira sends the bytes itself instead of redirecting
+    /// to the media service with a short-lived token.
+    private func attachmentData(_ kind: String, id: String, timeout: TimeInterval) async throws -> Data {
         var request = makeRequest(
-            path: "/rest/api/3/attachment/content/\(id)",
+            path: "/rest/api/3/attachment/\(kind)/\(id)",
             query: [URLQueryItem(name: "redirect", value: "false")],
             method: "GET"
         )
         request.setValue("*/*", forHTTPHeaderField: "Accept")
-        request.timeoutInterval = 120
+        request.timeoutInterval = timeout
         return try await sendData(request)
     }
 

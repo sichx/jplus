@@ -8,6 +8,7 @@ final class AttachmentStore {
 
     private var downloads: [URL: Task<URL, Error>] = [:]
     private let images = NSCache<NSURL, NSImage>()
+    private let thumbnails = NSCache<NSString, NSImage>()
 
     /// Local copy of an attachment, downloaded the first time it's asked for.
     func file(for attachment: JiraIssue.Attachment, using client: JiraClient) async throws -> URL {
@@ -34,6 +35,16 @@ final class AttachmentStore {
         if let image = images.object(forKey: file as NSURL) { return image }
         guard let image = NSImage(contentsOf: file), image.isValid else { throw AttachmentError.unreadableImage }
         images.setObject(image, forKey: file as NSURL)
+        return image
+    }
+
+    /// Jira's small preview of an image attachment, kept in memory only.
+    func thumbnail(for attachment: JiraIssue.Attachment, using client: JiraClient) async throws -> NSImage {
+        let key = "\(client.credentials.siteHost)/\(attachment.id)" as NSString
+        if let image = thumbnails.object(forKey: key) { return image }
+        let data = try await client.attachmentThumbnail(id: attachment.id)
+        guard let image = NSImage(data: data), image.isValid else { throw AttachmentError.unreadableImage }
+        thumbnails.setObject(image, forKey: key)
         return image
     }
 

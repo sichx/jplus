@@ -16,6 +16,8 @@ struct IssueDetailView: View {
 
     @State private var phase: Phase = .loading
     @State private var extras = IssueExtras()
+    @State private var previewURL: URL?
+    @State private var attachmentError: String?
     @AppStorage("showIssueDetailsPane") private var showDetailsPane = true
 
     var body: some View {
@@ -48,6 +50,16 @@ struct IssueDetailView: View {
             }
             .inspectorColumnWidth(min: 260, ideal: 320, max: 460)
         }
+        .environment(\.adfMedia, mediaContext)
+        .quickLookPreview($previewURL)
+        .alert("Couldn't Open Attachment", isPresented: Binding(
+            get: { attachmentError != nil },
+            set: { if !$0 { attachmentError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(attachmentError ?? "")
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -76,6 +88,23 @@ struct IssueDetailView: View {
     private var subtitle: String {
         if case .loaded(let issue) = phase { return issue.fields.summary }
         return ""
+    }
+
+    /// Lets the description, comments and attachment list show and open this issue's files.
+    private var mediaContext: ADFMediaContext? {
+        guard case .loaded(let issue) = phase, let client = session.client else { return nil }
+        return ADFMediaContext(
+            client: client,
+            attachments: issue.fields.attachments ?? [],
+            attachmentIDsByMediaID: extras.attachmentIDsByMediaID,
+            preview: { attachment in
+                do {
+                    previewURL = try await AttachmentStore.shared.file(for: attachment, using: client)
+                } catch {
+                    attachmentError = error.localizedDescription
+                }
+            }
+        )
     }
 
     private func load() async {
@@ -118,10 +147,6 @@ private struct IssueContentView: View {
     let issue: JiraIssue
     let extras: IssueExtras
 
-    @Environment(SessionStore.self) private var session
-    @State private var previewURL: URL?
-    @State private var attachmentError: String?
-
     private var fields: JiraIssue.Fields { issue.fields }
 
     var body: some View {
@@ -153,33 +178,6 @@ private struct IssueContentView: View {
             .frame(maxWidth: 820, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .environment(\.adfMedia, mediaContext)
-        .quickLookPreview($previewURL)
-        .alert("Couldn't Open Attachment", isPresented: Binding(
-            get: { attachmentError != nil },
-            set: { if !$0 { attachmentError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(attachmentError ?? "")
-        }
-    }
-
-    /// Lets the description and comments show this issue's attachments.
-    private var mediaContext: ADFMediaContext? {
-        guard let client = session.client else { return nil }
-        return ADFMediaContext(
-            client: client,
-            attachments: fields.attachments ?? [],
-            attachmentIDsByMediaID: extras.attachmentIDsByMediaID,
-            preview: { attachment in
-                do {
-                    previewURL = try await AttachmentStore.shared.file(for: attachment, using: client)
-                } catch {
-                    attachmentError = error.localizedDescription
-                }
-            }
-        )
     }
 
     private var header: some View {
@@ -228,7 +226,7 @@ private struct IssueContentView: View {
 
 // MARK: - Details pane (right-hand column)
 
-/// Ticket fields and the effort estimate, shown in the right-hand column.
+/// Ticket fields, Cursor prompt actions and attachments, shown in the right-hand column.
 private struct IssueDetailsPane: View {
     let issue: JiraIssue
 
@@ -282,16 +280,16 @@ private struct IssueDetailsPane: View {
                 }
                 .font(.callout)
 
-                Divider()
-
-                EffortEstimateView(issue: issue)
-                    .id(issue.key)
-
                 if let promptKind = IssueCursorPromptKind.forIssue(issue) {
                     Divider()
                     IssueCursorPromptButton(kind: promptKind) {
                         copyPrompt(kind: promptKind)
                     }
+                }
+
+                if let attachments = fields.attachments, !attachments.isEmpty {
+                    Divider()
+                    AttachmentList(attachments: attachments)
                 }
             }
             .padding(16)
@@ -330,6 +328,107 @@ private struct IssueDetailsPane: View {
                 .foregroundStyle(.secondary)
             content()
         }
+    }
+}
+
+/// Every file attached to the issue, newest first. Click one to preview it.
+private struct AttachmentList: View {
+    let attachments: [JiraIssue.Attachment]
+
+    private var newestFirst: [JiraIssue.Attachment] {
+        attachments.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Attachments (\(attachments.count))").font(.headline)
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(newestFirst) { attachment in
+                    AttachmentRow(attachment: attachment)
+                }
+            }
+            .padding(.horizontal, -6)
+        }
+    }
+}
+
+private struct AttachmentRow: View {
+    let attachment: JiraIssue.Attachment
+
+    @Environment(\.adfMedia) private var media
+    @State private var thumbnail: NSImage?
+    @State private var isOpening = false
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            guard let media else { return }
+            Task {
+                isOpening = true
+                await media.preview(attachment)
+                isOpening = false
+            }
+        } label: {
+            HStack(spacing: 10) {
+                icon
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(attachment.filename)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(details)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                if isOpening {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .font(.callout)
+            .padding(6)
+            .contentShape(Rectangle())
+            .background(isHovered ? Color.primary.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .disabled(isOpening)
+        .onHover { isHovered = $0 }
+        .help("Preview \(attachment.filename)")
+        .task(id: attachment.id) {
+            guard attachment.isImage, let media else { return }
+            thumbnail = try? await AttachmentStore.shared.thumbnail(for: attachment, using: media.client)
+        }
+    }
+
+    private var icon: some View {
+        let shape = RoundedRectangle(cornerRadius: 5)
+        return Group {
+            if let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: attachment.symbolName)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.quaternary.opacity(0.5))
+            }
+        }
+        .frame(width: 36, height: 36)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(.quaternary))
+    }
+
+    /// "335 kB · Sep 8, 2026"
+    private var details: String {
+        var parts: [String] = []
+        if let size = attachment.size {
+            parts.append(Int64(size).formatted(.byteCount(style: .file)))
+        }
+        if let created = attachment.created {
+            parts.append(created.formatted(date: .abbreviated, time: .omitted))
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

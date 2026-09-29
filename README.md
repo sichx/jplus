@@ -13,13 +13,11 @@ A native macOS client for Jira Cloud, built with SwiftUI. Browsing is read-only;
 - [x] Images and files attached in descriptions and comments, shown inline; click to Quick Look
 - [x] Linked Figma designs on the issue detail, with Open in Figma and Dev Mode
 - [x] Google-style search: plain words, typo-tolerant, ranked results with snippets and "Did you mean"; JQL kept as Advanced search
-- [x] Ticket details and effort estimate in a right-hand column (⌥⌘0 to show or hide)
+- [x] Ticket details and attachments in a right-hand column (⌥⌘0 to show or hide)
 - [x] Versions per project with progress, drilling into each version's issues
 - [x] New Ticket: drop/paste/choose a screenshot, create the issue, attach the image
 - [x] Optional Draft with Claude: summary, description and type proposed from the screenshot
-- [x] Effort estimate on each ticket: Claude sizes the work for one engineer, with range, breakdown, risks and open questions
 - [ ] Boards and sprints
-- [ ] A list of all of an issue's attachments (only those placed in the text show today)
 
 ## Requirements
 
@@ -154,6 +152,11 @@ Quick Look. Files are fetched with the account's token from
 `/rest/api/3/attachment/content/{id}?redirect=false` and kept in the app's
 temporary folder, so they open instantly on later visits.
 
+Every attachment, including ones never placed in the text, is listed under
+Attachments in the right-hand column, newest first, with its size and date.
+Images show Jira's thumbnail (`/rest/api/3/attachment/thumbnail/{id}`); click
+any row to open the file in Quick Look.
+
 When a design is linked through Figma for Jira, a Designs section follows the
 description: the design's name, whether it's Ready for dev, and buttons to
 open it in Figma or in Figma's Dev Mode (right-click to copy the link).
@@ -165,18 +168,6 @@ field needs `@optIn(to: "GraphStoreIssueAssociatedDesign")` and an
 `X-Query-Context: ari:cloud:platform::site/{cloudId}` header. If the gateway
 fails, the issue still loads; images then fall back to matching their alt
 text, which Jira sets to the file name.
-
-## Effort estimates
-
-Each ticket has an Effort estimate card. Press Estimate with Claude to send
-the ticket's fields, description and comments to Claude (`claude-opus-5`,
-JSON structured output). It returns a likely value and an optimistic to
-pessimistic range in working days for one experienced engineer who knows the
-codebase, plus a T-shirt size, a confidence level, a task breakdown,
-assumptions, risks and open questions. Claude sees only the ticket text, not
-the code. Estimates are saved per account and ticket; if the ticket is edited
-afterwards the card says so, and Re-estimate runs it again. Nothing is sent
-until you press the button.
 
 ## App icon
 
@@ -219,7 +210,6 @@ JPlus/
     AttachmentStore.swift   Downloads attachments once, caches files and decoded images
     ClaudeClient.swift      Raw HTTP call to the Claude Messages API (structured JSON)
     ClaudeDrafter.swift     Screenshot -> ticket draft
-    EffortEstimator.swift   Ticket -> effort estimate, plus the per-account estimate cache
     CommandPaletteModel.swift ⌘K search: key lookup, text search, version filter, title cache
     FuzzyMatcher.swift      Typo-tolerant word matching (edit distance, prefixes)
     MentionsModel.swift     Finds @-mentions of you in descriptions and comments
@@ -240,8 +230,7 @@ JPlus/
     VersionsView.swift      Project picker + grouped versions with progress bars
     VersionDetailView.swift One version's header and issues
     IssueListView.swift     Shared issue table + footer
-    IssueDetailView.swift   Issue header, fields, description, designs, comments
-    EffortEstimateView.swift Effort estimate card on the issue detail
+    IssueDetailView.swift   Issue header, description, designs, comments; fields and attachments column
     CommandPaletteView.swift ⌘K overlay: search box, suggestions, preview
     IssueBadges.swift       Status/type/priority badges, person cell, tags
     ADFView.swift           Native ADF renderer, including images and attached files

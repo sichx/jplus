@@ -84,6 +84,7 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
         let filename: String
         let mimeType: String?
         let size: Int?
+        let created: Date?
 
         var isImage: Bool { mimeType?.hasPrefix("image/") == true }
     }

@@ -400,7 +400,7 @@ private struct AttachmentChip: View {
                 if isOpening {
                     ProgressView().controlSize(.mini)
                 } else {
-                    Image(systemName: symbol).foregroundStyle(.secondary)
+                    Image(systemName: attachment.symbolName).foregroundStyle(.secondary)
                 }
                 Text(attachment.filename).lineLimit(1)
                 if let size = attachment.size {
@@ -417,14 +417,16 @@ private struct AttachmentChip: View {
         .disabled(isOpening)
         .help("Preview \(attachment.filename)")
     }
+}
 
-    private var symbol: String {
-        let type = attachment.mimeType ?? ""
-        let name = attachment.filename.lowercased()
+extension JiraIssue.Attachment {
+    /// SF Symbol for the kind of file.
+    var symbolName: String {
+        let type = mimeType ?? ""
         if type.hasPrefix("image/") { return "photo" }
         if type.hasPrefix("video/") { return "film" }
         if type == "application/pdf" { return "doc.richtext" }
-        if type.contains("spreadsheet") || type == "text/csv" || name.hasSuffix(".csv") { return "tablecells" }
+        if type.contains("spreadsheet") || type == "text/csv" || filename.lowercased().hasSuffix(".csv") { return "tablecells" }
         if type.contains("zip") { return "doc.zipper" }
         return "doc"
     }
