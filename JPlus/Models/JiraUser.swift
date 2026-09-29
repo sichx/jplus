@@ -9,6 +9,8 @@ struct JiraUser: Codable, Identifiable, Hashable, Sendable {
     let timeZone: String?
     let locale: String?
     let avatarUrls: [String: URL]?
+    /// "atlassian" for people; "app" and "customer" for others.
+    var accountType: String? = nil
 
     var id: String { accountId }
 

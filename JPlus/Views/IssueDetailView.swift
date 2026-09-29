@@ -38,7 +38,7 @@ struct IssueDetailView: View {
                     Button("Try Again") { Task { await load() } }
                 }
             case .loaded(let issue):
-                IssueContentView(issue: issue, extras: extras, children: children, onOpenIssue: onOpenIssue)
+                IssueContentView(issue: issue, extras: extras, children: children, onOpenIssue: onOpenIssue, onChanged: reloadIssue)
             }
         }
         .navigationTitle(key)
@@ -140,6 +140,9 @@ struct IssueDetailView: View {
     private func reloadIssue() async {
         guard let client = session.client, let issue = try? await client.issue(key: key) else { return }
         phase = .loaded(issue)
+        if let id = session.currentAccountID {
+            IssueTitleCache.save([issue.key: issue.fields.summary], in: AccountDefaults.store(for: id))
+        }
     }
 
     /// Nil if the search fails, so a refresh keeps what's already shown.
@@ -167,6 +170,8 @@ private struct IssueContentView: View {
     /// Search results for the issue's children; nil until loaded.
     let children: IssueSearchPage?
     let onOpenIssue: (String) -> Void
+    /// Called after an edit is saved, to reload the issue.
+    let onChanged: () async -> Void
 
     private var fields: JiraIssue.Fields { issue.fields }
 
@@ -182,13 +187,7 @@ private struct IssueContentView: View {
             VStack(alignment: .leading, spacing: 20) {
                 header
                 Divider()
-                section("Description") {
-                    if let description = fields.description, !description.children.isEmpty {
-                        ADFView(node: description)
-                    } else {
-                        Text("No description").foregroundStyle(.secondary)
-                    }
-                }
+                DescriptionSection(issue: issue, onChanged: onChanged)
                 if !childIssues.isEmpty {
                     Divider()
                     ChildIssuesSection(
@@ -234,26 +233,24 @@ private struct IssueContentView: View {
                     .textSelection(.enabled)
                     .fixedSize()
                 Spacer()
-                StatusBadge(status: fields.status)
+                IssueStatusButton(issue: issue, onChanged: onChanged)
                     .fixedSize()
             }
-            Text(fields.summary)
-                .font(.title2.weight(.semibold))
-                .textSelection(.enabled)
+            EditableSummary(issue: issue, onChanged: onChanged)
         }
     }
 
     private var comments: some View {
         let list = fields.comment?.comments ?? []
         return section("Comments (\(fields.comment?.total ?? list.count))") {
-            if list.isEmpty {
-                Text("No comments").foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 16) {
-                    ForEach(list) { comment in
-                        CommentView(comment: comment)
-                    }
+            VStack(alignment: .leading, spacing: 16) {
+                if list.isEmpty {
+                    Text("No comments").foregroundStyle(.secondary)
                 }
+                ForEach(list) { comment in
+                    CommentView(comment: comment)
+                }
+                CommentComposer(issue: issue, onChanged: onChanged)
             }
         }
     }
@@ -285,12 +282,12 @@ private struct IssueDetailsPane: View {
                 HStack {
                     Text("Details").font(.headline)
                     Spacer()
-                    StatusBadge(status: fields.status)
+                    IssueStatusButton(issue: issue, onChanged: onChanged)
                 }
 
                 VStack(alignment: .leading, spacing: 14) {
-                    field("Assignee") { PersonCell(user: fields.assignee, avatarSize: 20) }
-                    field("Reporter") { PersonCell(user: fields.reporter, avatarSize: 20) }
+                    field("Assignee") { IssuePersonField(issue: issue, role: .assignee, onChanged: onChanged) }
+                    field("Reporter") { IssuePersonField(issue: issue, role: .reporter, onChanged: onChanged) }
                     field("Type") { IssueTypeBadge(name: fields.issueType.name) }
                     if let priority = fields.priority {
                         field("Priority") { PriorityLabel(name: priority.name) }
@@ -476,33 +473,17 @@ private struct FixVersionsField: View {
     let onChanged: () async -> Void
 
     @State private var isEditing = false
-    @State private var isHovered = false
     /// The project's versions, loaded when the popover first opens and kept for reopening.
     @State private var projectVersions: [JiraVersion]?
 
     var body: some View {
-        Button { isEditing = true } label: {
-            HStack(alignment: .top, spacing: 6) {
-                if issue.fields.fixVersions.isEmpty {
-                    Text("None").foregroundStyle(.secondary)
-                } else {
-                    TagList(items: issue.fields.fixVersions.map(\.name))
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "pencil")
-                    .foregroundStyle(.secondary)
-                    .opacity(isHovered || isEditing ? 1 : 0)
+        EditableFieldButton(help: "Change fix versions", isEditing: $isEditing) {
+            if issue.fields.fixVersions.isEmpty {
+                Text("None").foregroundStyle(.secondary)
+            } else {
+                TagList(items: issue.fields.fixVersions.map(\.name))
             }
-            .padding(4)
-            .background(isHovered || isEditing ? Color.primary.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 6))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        // The padding is only for the hover highlight; keep the text in line with the other fields.
-        .padding(-4)
-        .onHover { isHovered = $0 }
-        .help("Change fix versions")
-        .popover(isPresented: $isEditing, arrowEdge: .leading) {
+        } editor: {
             FixVersionsPicker(issue: issue, projectVersions: $projectVersions, onChanged: onChanged)
         }
     }

@@ -124,6 +124,14 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
     ]
 }
 
+/// A move allowed by the issue's workflow, from `GET …/transitions`.
+/// Its name can differ from the status it leads to.
+struct JiraTransition: Decodable, Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    let to: JiraIssue.Status
+}
+
 enum IssueKey {
     /// Normalizes user input into a Jira issue key, or nil if it can't be one.
     /// Accepts "vpe-5555", " VPE-5555 ", and browse URLs like

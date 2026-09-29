@@ -1,6 +1,6 @@
 # JPlus
 
-A native macOS client for Jira Cloud, built with SwiftUI. Browsing is read-only; the write paths are creating a ticket from a screenshot and changing an issue's fix versions.
+A native macOS client for Jira Cloud, built with SwiftUI. Besides browsing, it can create a ticket from a screenshot and edit an issue's title, description, status, assignee, reporter and fix versions, and add comments.
 
 ## Status
 
@@ -16,6 +16,7 @@ A native macOS client for Jira Cloud, built with SwiftUI. Browsing is read-only;
 - [x] Google-style search: plain words, typo-tolerant, ranked results with snippets and "Did you mean"; JQL kept as Advanced search
 - [x] Ticket details and attachments in a right-hand column (⌥⌘0 to show or hide)
 - [x] Change an issue's fix versions from the details column
+- [x] Edit an issue's title, description, status, assignee and reporter; add comments
 - [x] Versions per project with progress, drilling into each version's issues; Hide completed toggle
 - [x] New Ticket: drop/paste/choose a screenshot, create the issue, attach the image
 - [x] Optional Draft with Claude: summary, description and type proposed from the screenshot
@@ -197,6 +198,32 @@ edits made elsewhere are kept. If Jira refuses, the box flips back and Jira's
 message is shown. Versions come from `/rest/api/3/project/{key}/versions`,
 loaded when the popover first opens.
 
+## Editing an issue
+
+Every edit saves straight to Jira, then the issue reloads. If Jira refuses,
+its message is shown next to the control.
+
+- **Title**: hover it and click the pencil. Return saves, Esc cancels.
+  `PUT /rest/api/3/issue/{key}` with `fields.summary`.
+- **Status**: click the status badge (header or details column). The list is
+  the workflow's transitions from `GET …/issue/{key}/transitions`, showing the
+  status each one leads to (and the transition's own name when it differs,
+  e.g. VPE's "QA" transition goes to DEV REVIEW). Picking one posts it.
+  Transitions that need a screen of extra fields fail with Jira's message; do
+  those in Jira.
+- **Assignee / Reporter**: click the field in the details column and search.
+  With nothing typed you're listed first. Assignee candidates come from
+  `/rest/api/3/user/assignable/search` and are saved with
+  `PUT …/issue/{key}/assignee` (Unassigned clears it); reporter candidates come
+  from `/rest/api/3/user/search` with app accounts filtered out, saved as
+  `fields.reporter` (needs the Modify Reporter permission).
+- **Description**: Edit next to the heading. The text is Jira wiki markup,
+  read and written through API v2 (`/rest/api/2/issue/{key}`), so Jira does the
+  ADF conversion both ways and images, tables, links and mentions survive a
+  plain-text edit. Mentions appear as `[~accountid:…]`. ⌘↩ saves, Esc cancels.
+- **Comments**: the box under the comments. Also wiki markup, posted with
+  `POST /rest/api/2/issue/{key}/comment`; ⌘↩ posts.
+
 ## Versions
 
 Hide completed, left of the filter field on a version's issue list, drops
@@ -268,7 +295,8 @@ JPlus/
     VersionsView.swift      Project picker + grouped versions with progress bars
     VersionDetailView.swift One version's header and issues
     IssueListView.swift     Shared issue table + footer
-    IssueDetailView.swift   Issue header and parent, description, subtasks, designs, comments; fields (fix versions editable) and attachments column
+    IssueDetailView.swift   Issue header and parent, description, subtasks, designs, comments; fields and attachments column
+    IssueEditing.swift      Title, status, assignee/reporter, description and comment editors
     CommandPaletteView.swift ⌘K overlay: search box, suggestions, preview
     IssueBadges.swift       Status/type/priority badges, person cell, tags
     ADFView.swift           Native ADF renderer, including images and attached files

@@ -193,6 +193,83 @@ struct JiraClient: Sendable {
         ])
     }
 
+    /// Renames an issue.
+    func setSummary(_ summary: String, onIssue key: String) async throws {
+        try await put("/rest/api/3/issue/\(key)", json: ["fields": ["summary": summary]])
+    }
+
+    /// Assigns an issue, or unassigns it when `accountID` is nil.
+    func setAssignee(accountID: String?, onIssue key: String) async throws {
+        try await put("/rest/api/3/issue/\(key)/assignee", json: ["accountId": accountID ?? NSNull()])
+    }
+
+    /// Changes an issue's reporter. Needs the Modify Reporter permission.
+    func setReporter(accountID: String, onIssue key: String) async throws {
+        try await put("/rest/api/3/issue/\(key)", json: ["fields": ["reporter": ["accountId": accountID]]])
+    }
+
+    /// People who can be assigned the issue, matching `query` by name or email.
+    func assignableUsers(issueKey: String, query: String) async throws -> [JiraUser] {
+        try await get("/rest/api/3/user/assignable/search", query: [
+            URLQueryItem(name: "issueKey", value: issueKey),
+            URLQueryItem(name: "query", value: query),
+            URLQueryItem(name: "maxResults", value: "20"),
+        ])
+    }
+
+    /// Active people on the site matching `query`, leaving out apps and bots.
+    func users(matching query: String) async throws -> [JiraUser] {
+        let users: [JiraUser] = try await get("/rest/api/3/user/search", query: [
+            URLQueryItem(name: "query", value: query),
+            URLQueryItem(name: "maxResults", value: "20"),
+        ])
+        return users.filter { ($0.accountType ?? "atlassian") == "atlassian" && $0.active != false }
+    }
+
+    /// The moves the workflow allows from the issue's current status.
+    func transitions(issueKey: String) async throws -> [JiraTransition] {
+        struct Response: Decodable { let transitions: [JiraTransition] }
+        let response: Response = try await get("/rest/api/3/issue/\(issueKey)/transitions")
+        return response.transitions
+    }
+
+    /// Moves an issue to another status.
+    func transition(issueKey: String, transitionID: String) async throws {
+        var request = makeRequest(path: "/rest/api/3/issue/\(issueKey)/transitions", method: "POST")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["transition": ["id": transitionID]])
+        _ = try await sendData(request)
+    }
+
+    /// The description as Jira wiki markup. API v2 converts to and from ADF on
+    /// the server, keeping images, tables, links and mentions through a
+    /// plain-text edit, which a local ADF conversion would lose.
+    func descriptionWikiMarkup(issueKey: String) async throws -> String {
+        struct Response: Decodable {
+            let fields: Fields
+            struct Fields: Decodable { let description: String? }
+        }
+        let response: Response = try await get(
+            "/rest/api/2/issue/\(issueKey)",
+            query: [URLQueryItem(name: "fields", value: "description")]
+        )
+        return response.fields.description ?? ""
+    }
+
+    /// Replaces the description with wiki markup; empty text clears it.
+    func setDescription(wikiMarkup: String, onIssue key: String) async throws {
+        let trimmed = wikiMarkup.trimmingCharacters(in: .whitespacesAndNewlines)
+        try await put("/rest/api/2/issue/\(key)", json: [
+            "fields": ["description": trimmed.isEmpty ? NSNull() : wikiMarkup as Any],
+        ])
+    }
+
+    /// Adds a comment written in wiki markup.
+    func addComment(wikiMarkup: String, to issueKey: String) async throws {
+        struct Created: Decodable { let id: String }
+        let _: Created = try await post("/rest/api/2/issue/\(issueKey)/comment", json: ["body": wikiMarkup])
+    }
+
     /// Project metadata including the issue types available for creation.
     func projectDetail(key: String) async throws -> JiraProjectDetail {
         try await get("/rest/api/3/project/\(key)")
