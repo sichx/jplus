@@ -187,9 +187,12 @@ embedded in the issue are listed without assignees.
 ## Versions
 
 Hide completed, left of the filter field on a version's issue list, drops
-issues whose status is in Jira's Done category (Done, Won't Do) by adding
-`statusCategory != Done` to the query, so paging only fetches open issues.
-The choice is remembered across versions.
+issues whose status is in Jira's Done category (Done, Won't Do) or past
+development: Ready for QA, QA, Ready for UAT and UAT. The query gets
+`statusCategory != Done AND status not in ("Ready for QA", "QA", ...)`, so
+paging only fetches open issues. Only statuses the site has are named
+(checked once per session with `/rest/api/3/status`), since JQL rejects
+unknown status names. The choice is remembered across versions.
 
 ## App icon
 

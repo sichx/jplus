@@ -19,6 +19,7 @@ final class SessionStore {
 
     let accounts: AccountStore
     private var cachedCloudId: String?
+    private var cachedStatusNames: Set<String>?
 
     init(accounts: AccountStore = AccountStore(persistence: KeychainAccountPersistence())) {
         self.accounts = accounts
@@ -43,6 +44,16 @@ final class SessionStore {
         let id = try await client.cloudId()
         cachedCloudId = id
         return id
+    }
+
+    /// Lowercased names of every status on the signed-in site, fetched once.
+    /// JQL rejects a status name the site doesn't have.
+    func statusNames() async throws -> Set<String> {
+        if let cachedStatusNames { return cachedStatusNames }
+        guard let client else { throw JiraError.unauthorized }
+        let names = Set(try await client.statuses().map { $0.name.lowercased() })
+        cachedStatusNames = names
+        return names
     }
 
     // MARK: - Launch
@@ -157,6 +168,7 @@ final class SessionStore {
         client = nil
         currentAccountID = nil
         cachedCloudId = nil
+        cachedStatusNames = nil
         accounts.setActive(nil)
         state = .signedOut
     }
@@ -167,6 +179,7 @@ final class SessionStore {
         self.client = client
         currentAccountID = account.id
         cachedCloudId = nil
+        cachedStatusNames = nil
         accounts.setActive(account.id)
         notice = nil
         state = .signedIn(user)

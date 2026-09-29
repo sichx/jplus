@@ -140,6 +140,11 @@ struct JiraClient: Sendable {
         return page.issues.first?.fields.created
     }
 
+    /// Every status on the site, across all workflows.
+    func statuses() async throws -> [JiraIssue.Status] {
+        try await get("/rest/api/3/status")
+    }
+
     /// All projects visible to the user, ordered by name.
     func projects() async throws -> [JiraProject] {
         var all: [JiraProject] = []

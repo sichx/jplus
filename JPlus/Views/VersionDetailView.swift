@@ -13,17 +13,20 @@ struct VersionDetailView: View {
     @State private var highlightsError: String?
     @AppStorage("versionHideCompleted") private var hideCompleted = false
 
-    private var version: JiraVersion { route.version }
+    /// Past development, so counted as completed along with Jira's Done
+    /// category (Done, Won't Do), though Jira files them under In Progress.
+    private static let completedStatusNames = ["Ready for QA", "QA", "Ready for UAT", "UAT"]
 
-    private var jql: String {
-        let open = hideCompleted ? " AND statusCategory != Done" : ""
-        return "project = \(route.project.key) AND fixVersion = \(version.id)\(open) ORDER BY status ASC, priority DESC, updated DESC"
-    }
+    private var version: JiraVersion { route.version }
 
     /// Also filters what's already loaded, so completed issues disappear as
     /// soon as the toggle flips rather than when the new query returns.
     private var shownIssues: [IssueSummary] {
-        hideCompleted ? query.issues.filter { !$0.fields.status.isDone } : query.issues
+        hideCompleted ? query.issues.filter { !Self.isCompleted($0.fields.status) } : query.issues
+    }
+
+    private static func isCompleted(_ status: JiraIssue.Status) -> Bool {
+        status.isDone || completedStatusNames.contains { $0.caseInsensitiveCompare(status.name) == .orderedSame }
     }
 
     var body: some View {
@@ -176,7 +179,8 @@ struct VersionDetailView: View {
             } actions: {
                 Button("Try Again") { Task { await run() } }
             }
-        } else if query.isLoading && query.issues.isEmpty {
+        } else if (query.isLoading || !query.hasRun) && query.issues.isEmpty {
+            // Not run yet counts as loading: the first query can wait on the site's status list.
             ProgressView("Loading issues…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if query.hasRun && query.issues.isEmpty && !hideCompleted {
@@ -188,7 +192,7 @@ struct VersionDetailView: View {
                     Toggle("Hide completed", isOn: $hideCompleted)
                         .toggleStyle(.checkbox)
                         .fixedSize()
-                        .help("Hide issues in a done status, such as Done and Won't Do")
+                        .help("Hide issues from Ready for QA onward: QA, Ready for UAT, UAT, and done statuses such as Done and Won't Do")
                 }
                 // Blank rather than striped when empty, or the stripes behind the message read as rows.
                 .alternatingRowBackgrounds(shownIssues.isEmpty ? .disabled : .automatic)
@@ -212,6 +216,25 @@ struct VersionDetailView: View {
 
     private func run() async {
         guard let client = session.client else { return }
+        let hiding = hideCompleted
+        let jql = await jql(hidingCompleted: hiding)
+        // Toggled again while the status list loaded; that newer run takes over.
+        guard hiding == hideCompleted else { return }
         await query.run(jql, using: client, keepingResults: true)
+    }
+
+    private func jql(hidingCompleted: Bool) async -> String {
+        var clauses = ["project = \(route.project.key)", "fixVersion = \(version.id)"]
+        if hidingCompleted {
+            clauses.append("statusCategory != Done")
+            // JQL rejects status names the site doesn't have, so name only those
+            // it does. The rest are still hidden from the rows that load.
+            let onSite = (try? await session.statusNames()) ?? []
+            let names = Self.completedStatusNames.filter { onSite.contains($0.lowercased()) }
+            if !names.isEmpty {
+                clauses.append("status not in (\(names.map { "\"\($0)\"" }.joined(separator: ", ")))")
+            }
+        }
+        return clauses.joined(separator: " AND ") + " ORDER BY status ASC, priority DESC, updated DESC"
     }
 }
