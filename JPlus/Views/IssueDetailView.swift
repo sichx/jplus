@@ -1,3 +1,4 @@
+import AppKit
 import QuickLook
 import SwiftUI
 
@@ -231,6 +232,8 @@ private struct IssueContentView: View {
 private struct IssueDetailsPane: View {
     let issue: JiraIssue
 
+    @State private var copiedPromptToast = false
+
     private var fields: JiraIssue.Fields { issue.fields }
 
     var body: some View {
@@ -283,9 +286,40 @@ private struct IssueDetailsPane: View {
 
                 EffortEstimateView(issue: issue)
                     .id(issue.key)
+
+                if let promptKind = IssueCursorPromptKind.forIssue(issue) {
+                    Divider()
+                    IssueCursorPromptButton(kind: promptKind) {
+                        copyPrompt(kind: promptKind)
+                    }
+                }
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .overlay(alignment: .bottom) {
+            if copiedPromptToast {
+                Text("Prompt copied")
+                    .font(.callout.weight(.medium))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+                    .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+                    .padding(.bottom, 12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.2), value: copiedPromptToast)
+    }
+
+    private func copyPrompt(kind: IssueCursorPromptKind) {
+        let text = IssueCursorPrompts.text(for: issue, kind: kind)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copiedPromptToast = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            copiedPromptToast = false
         }
     }
 
@@ -300,6 +334,25 @@ private struct IssueDetailsPane: View {
 }
 
 // MARK: - Pieces
+
+private struct IssueCursorPromptButton: View {
+    let kind: IssueCursorPromptKind
+    let action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Actions")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            Button(action: action) {
+                Label(kind.buttonTitle, systemImage: kind.systemImage)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .help("Copy a prompt for Cursor (paste into chat)")
+        }
+    }
+}
 
 /// A linked design, with buttons to open it in Figma.
 private struct DesignRow: View {
