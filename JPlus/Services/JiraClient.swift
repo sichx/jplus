@@ -79,6 +79,16 @@ struct JiraClient: Sendable {
         return try await get("/rest/api/3/search/jql", query: query)
     }
 
+    /// An issue's sub-tasks, or an epic's child issues, in rank order.
+    func childIssues(of key: String) async throws -> IssueSearchPage {
+        try await search(jql: Self.childIssuesJQL(of: key), maxResults: 100)
+    }
+
+    /// The query behind `childIssues(of:)`, also used to open the full list in Jira.
+    static func childIssuesJQL(of key: String) -> String {
+        "parent = \(key) ORDER BY rank ASC"
+    }
+
     /// Runs a JQL query returning the given fields, decoded as `Issue`.
     func search<Issue: Decodable>(jql: String, fields: [String], maxResults: Int = 50, nextPageToken: String? = nil) async throws -> SearchPage<Issue> {
         var query = [

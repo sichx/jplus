@@ -14,35 +14,38 @@ final class IssueQuery {
     private var nextPageToken: String?
     private var generation = 0
 
-    /// Replaces the current results with the first page of `jql`.
-    func run(_ jql: String, using client: JiraClient) async {
+    /// Replaces the current results with the first page of `jql`. With
+    /// `keepingResults`, the current issues stay listed until that page
+    /// arrives, so a list can reload in place instead of flashing empty.
+    func run(_ jql: String, using client: JiraClient, keepingResults: Bool = false) async {
         generation += 1
         let myGeneration = generation
         self.jql = jql
-        issues = []
+        if !keepingResults { issues = [] }
         nextPageToken = nil
         hasMore = false
         errorMessage = nil
         hasRun = true
-        await fetchPage(generation: myGeneration, using: client)
+        await fetchPage(generation: myGeneration, replacing: true, using: client)
     }
 
     func loadMore(using client: JiraClient) async {
         guard hasMore, !isLoading else { return }
-        await fetchPage(generation: generation, using: client)
+        await fetchPage(generation: generation, replacing: false, using: client)
     }
 
-    private func fetchPage(generation: Int, using client: JiraClient) async {
+    private func fetchPage(generation: Int, replacing: Bool, using client: JiraClient) async {
         isLoading = true
         defer { if generation == self.generation { isLoading = false } }
         do {
             let page = try await client.search(jql: jql, nextPageToken: nextPageToken)
             guard generation == self.generation else { return }
-            issues += page.issues
+            issues = replacing ? page.issues : issues + page.issues
             nextPageToken = page.nextPageToken
             hasMore = page.nextPageToken != nil && page.isLast != true
         } catch {
             guard generation == self.generation else { return }
+            if replacing { issues = [] }
             errorMessage = error.localizedDescription
         }
     }

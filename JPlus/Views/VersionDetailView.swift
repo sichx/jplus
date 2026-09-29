@@ -11,11 +11,19 @@ struct VersionDetailView: View {
     @State private var highlights: VersionHighlights?
     @State private var isLoadingHighlights = false
     @State private var highlightsError: String?
+    @AppStorage("versionHideCompleted") private var hideCompleted = false
 
     private var version: JiraVersion { route.version }
 
     private var jql: String {
-        "project = \(route.project.key) AND fixVersion = \(version.id) ORDER BY status ASC, priority DESC, updated DESC"
+        let open = hideCompleted ? " AND statusCategory != Done" : ""
+        return "project = \(route.project.key) AND fixVersion = \(version.id)\(open) ORDER BY status ASC, priority DESC, updated DESC"
+    }
+
+    /// Also filters what's already loaded, so completed issues disappear as
+    /// soon as the toggle flips rather than when the new query returns.
+    private var shownIssues: [IssueSummary] {
+        hideCompleted ? query.issues.filter { !$0.fields.status.isDone } : query.issues
     }
 
     var body: some View {
@@ -49,6 +57,7 @@ struct VersionDetailView: View {
         }
         .task { await run() }
         .task { await loadHighlights() }
+        .onChange(of: hideCompleted) { Task { await run() } }
     }
 
     private var header: some View {
@@ -170,12 +179,27 @@ struct VersionDetailView: View {
         } else if query.isLoading && query.issues.isEmpty {
             ProgressView("Loading issues…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if query.hasRun && query.issues.isEmpty {
+        } else if query.hasRun && query.issues.isEmpty && !hideCompleted {
             ContentUnavailableView("No Issues", systemImage: "shippingbox",
                                    description: Text("Nothing has this fix version yet."))
         } else {
             VStack(spacing: 0) {
-                IssueListView(issues: query.issues, onOpen: onOpenIssue)
+                IssueListView(issues: shownIssues, onOpen: onOpenIssue) {
+                    Toggle("Hide completed", isOn: $hideCompleted)
+                        .toggleStyle(.checkbox)
+                        .fixedSize()
+                        .help("Hide issues in a done status, such as Done and Won't Do")
+                }
+                // Blank rather than striped when empty, or the stripes behind the message read as rows.
+                .alternatingRowBackgrounds(shownIssues.isEmpty ? .disabled : .automatic)
+                // An overlay rather than its own branch, so the toggle stays on screen to turn back off.
+                .overlay {
+                    if hideCompleted, query.hasRun, !query.isLoading, shownIssues.isEmpty {
+                        ContentUnavailableView("No Open Issues", systemImage: "checkmark.circle",
+                                               description: Text("Completed issues are hidden."))
+                            .allowsHitTesting(false)
+                    }
+                }
                 Divider()
                 IssueListFooter(query: query) {
                     Task {
@@ -188,6 +212,6 @@ struct VersionDetailView: View {
 
     private func run() async {
         guard let client = session.client else { return }
-        await query.run(jql, using: client)
+        await query.run(jql, using: client, keepingResults: true)
     }
 }

@@ -7,6 +7,8 @@ struct IssueDetailView: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.openURL) private var openURL
     let key: String
+    /// Opens another issue in the app, such as the parent or a sub-task.
+    let onOpenIssue: (String) -> Void
 
     private enum Phase {
         case loading
@@ -16,6 +18,7 @@ struct IssueDetailView: View {
 
     @State private var phase: Phase = .loading
     @State private var extras = IssueExtras()
+    @State private var children: IssueSearchPage?
     @State private var previewURL: URL?
     @State private var attachmentError: String?
     @AppStorage("showIssueDetailsPane") private var showDetailsPane = true
@@ -35,7 +38,7 @@ struct IssueDetailView: View {
                     Button("Try Again") { Task { await load() } }
                 }
             case .loaded(let issue):
-                IssueContentView(issue: issue, extras: extras)
+                IssueContentView(issue: issue, extras: extras, children: children, onOpenIssue: onOpenIssue)
             }
         }
         .navigationTitle(key)
@@ -43,7 +46,7 @@ struct IssueDetailView: View {
         .inspector(isPresented: $showDetailsPane) {
             Group {
                 if case .loaded(let issue) = phase {
-                    IssueDetailsPane(issue: issue)
+                    IssueDetailsPane(issue: issue, onOpenIssue: onOpenIssue)
                 } else {
                     Color.clear
                 }
@@ -113,9 +116,11 @@ struct IssueDetailView: View {
             return
         }
         phase = .loading
-        // Designs and attachment media ids come from the GraphQL gateway:
-        // fetched alongside the issue, but never holding it up or failing it.
+        // Designs and attachment media ids come from the GraphQL gateway, and
+        // child issues from a search: fetched alongside the issue, but never
+        // holding it up or failing it.
         async let fetchedExtras = loadExtras(using: client)
+        async let fetchedChildren = loadChildren(using: client)
         do {
             let issue = try await client.issue(key: key)
             phase = .loaded(issue)
@@ -127,7 +132,14 @@ struct IssueDetailView: View {
         } catch {
             phase = .failed(error.localizedDescription)
         }
+        if let fetched = await fetchedChildren { children = fetched }
         if let fetched = await fetchedExtras { extras = fetched }
+    }
+
+    /// Nil if the search fails, so a refresh keeps what's already shown.
+    /// Until a search succeeds, the sub-tasks embedded in the issue are listed.
+    private func loadChildren(using client: JiraClient) async -> IssueSearchPage? {
+        try? await client.childIssues(of: key)
     }
 
     /// Nil if the gateway fails, so a refresh keeps what's already shown.
@@ -146,8 +158,18 @@ struct IssueDetailView: View {
 private struct IssueContentView: View {
     let issue: JiraIssue
     let extras: IssueExtras
+    /// Search results for the issue's children; nil until loaded.
+    let children: IssueSearchPage?
+    let onOpenIssue: (String) -> Void
 
     private var fields: JiraIssue.Fields { issue.fields }
+
+    /// The search results once loaded: they include assignees and an epic's
+    /// child issues. Until then, the sub-tasks embedded in the issue.
+    private var childIssues: [ChildIssue] {
+        if let children { return children.issues.map(ChildIssue.init) }
+        return (fields.subtasks ?? []).map(ChildIssue.init)
+    }
 
     var body: some View {
         ScrollView {
@@ -160,6 +182,17 @@ private struct IssueContentView: View {
                     } else {
                         Text("No description").foregroundStyle(.secondary)
                     }
+                }
+                if !childIssues.isEmpty {
+                    Divider()
+                    ChildIssuesSection(
+                        title: fields.issueType.isEpicLevel ? "Child issues" : "Subtasks",
+                        parentKey: issue.key,
+                        children: childIssues,
+                        showsAssignees: children != nil,
+                        isTruncated: children.map { $0.nextPageToken != nil && $0.isLast != true } ?? false,
+                        onOpen: onOpenIssue
+                    )
                 }
                 if !extras.designs.isEmpty {
                     Divider()
@@ -184,16 +217,19 @@ private struct IssueContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 if let parent = fields.parent {
-                    Text(parent.key).foregroundStyle(.secondary)
+                    ParentBreadcrumb(parent: parent, onOpen: onOpenIssue)
                     Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
                 }
                 IssueTypeBadge(name: fields.issueType.name)
+                    .fixedSize()
                 Text(issue.key)
                     .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                    .fixedSize()
                 Spacer()
                 StatusBadge(status: fields.status)
+                    .fixedSize()
             }
             Text(fields.summary)
                 .font(.title2.weight(.semibold))
@@ -229,6 +265,7 @@ private struct IssueContentView: View {
 /// Ticket fields, Cursor prompt actions and attachments, shown in the right-hand column.
 private struct IssueDetailsPane: View {
     let issue: JiraIssue
+    let onOpenIssue: (String) -> Void
 
     @State private var copiedPromptToast = false
 
@@ -251,15 +288,7 @@ private struct IssueDetailsPane: View {
                         field("Priority") { PriorityLabel(name: priority.name) }
                     }
                     if let parent = fields.parent {
-                        field("Parent") {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(parent.key).font(.callout.monospaced())
-                                if let summary = parent.fields?.summary {
-                                    Text(summary).foregroundStyle(.secondary)
-                                }
-                            }
-                            .textSelection(.enabled)
-                        }
+                        field("Parent") { ParentCard(parent: parent, onOpen: onOpenIssue) }
                     }
                     if !fields.fixVersions.isEmpty {
                         field("Fix versions") { TagList(items: fields.fixVersions.map(\.name)) }
@@ -429,6 +458,262 @@ private struct AttachmentRow: View {
             parts.append(created.formatted(date: .abbreviated, time: .omitted))
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Parent and child issues
+
+/// A sub-task or child issue as listed on its parent.
+private struct ChildIssue: Identifiable {
+    let key: String
+    let summary: String
+    let status: JiraIssue.Status?
+    let typeName: String?
+    let assignee: JiraUser?
+
+    var id: String { key }
+
+    init(_ issue: IssueSummary) {
+        key = issue.key
+        summary = issue.fields.summary
+        status = issue.fields.status
+        typeName = issue.fields.issueType.name
+        assignee = issue.fields.assignee
+    }
+
+    init(_ ref: JiraIssue.IssueRef) {
+        key = ref.key
+        summary = ref.fields?.summary ?? ref.key
+        status = ref.fields?.status
+        typeName = ref.fields?.issueType?.name
+        assignee = nil
+    }
+}
+
+/// Sub-tasks, or an epic's child issues, with overall progress. Long lists
+/// start collapsed; rows open the issue in the app.
+private struct ChildIssuesSection: View {
+    let title: String
+    let parentKey: String
+    let children: [ChildIssue]
+    /// False while listing the sub-tasks embedded in the issue, which carry no assignee.
+    let showsAssignees: Bool
+    /// More children exist than one search returns; the rest are linked in Jira.
+    let isTruncated: Bool
+    let onOpen: (String) -> Void
+
+    @Environment(SessionStore.self) private var session
+    @State private var isExpanded = false
+
+    private static let collapsedLimit = 10
+
+    private var visibleChildren: ArraySlice<ChildIssue> {
+        isExpanded ? children[...] : children.prefix(Self.collapsedLimit)
+    }
+
+    private var counts: JiraVersion.IssueStatusCounts {
+        var toDo = 0, inProgress = 0, done = 0
+        for child in children {
+            switch child.status?.statusCategory?.key {
+            case "done": done += 1
+            case "indeterminate": inProgress += 1
+            default: toDo += 1
+            }
+        }
+        return JiraVersion.IssueStatusCounts(unmapped: 0, toDo: toDo, inProgress: inProgress, done: done)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("\(title) (\(children.count)\(isTruncated ? "+" : ""))").font(.headline)
+                Spacer()
+                // A partial list would give a misleading percentage.
+                if !isTruncated { progress }
+            }
+
+            VStack(spacing: 0) {
+                ForEach(Array(visibleChildren.enumerated()), id: \.element.id) { index, child in
+                    if index > 0 { Divider() }
+                    ChildIssueRow(child: child, showsAssignee: showsAssignees, onOpen: onOpen)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
+
+            footer
+        }
+    }
+
+    private var progress: some View {
+        let counts = counts
+        return HStack(spacing: 8) {
+            VersionProgressBar(counts: counts)
+                .frame(width: 120, height: 6)
+            Text("\(counts.done) of \(counts.total) done")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .help("\(counts.done) done, \(counts.inProgress) in progress, \(counts.toDo) to do")
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        let hiddenCount = children.count - Self.collapsedLimit
+        if hiddenCount > 0 || isTruncated {
+            HStack(spacing: 16) {
+                if hiddenCount > 0 {
+                    Button(isExpanded ? "Show Less" : "Show \(hiddenCount) More") {
+                        withAnimation(.snappy(duration: 0.2)) { isExpanded.toggle() }
+                    }
+                }
+                if isTruncated, let client = session.client {
+                    Link("View All in Jira", destination: client.browseURL(jql: JiraClient.childIssuesJQL(of: parentKey)))
+                }
+            }
+            .buttonStyle(.link)
+            .font(.callout)
+        }
+    }
+}
+
+private struct ChildIssueRow: View {
+    let child: ChildIssue
+    let showsAssignee: Bool
+    let onOpen: (String) -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button { onOpen(child.key) } label: {
+            HStack(spacing: 10) {
+                IssueTypeBadge(name: child.typeName ?? "Issue", iconOnly: true)
+                    .frame(width: 18)
+                Text(child.key)
+                    .font(.callout.monospaced())
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                Text(child.summary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if showsAssignee {
+                    AvatarView(user: child.assignee, size: 20)
+                        .help(child.assignee?.displayName ?? "Unassigned")
+                }
+                if let status = child.status {
+                    // Fixed column so the badges line up whatever their length.
+                    StatusBadge(status: status)
+                        .frame(minWidth: 110, alignment: .leading)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+            .background(isHovered ? Color.primary.opacity(0.06) : .clear)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(child.summary)
+        .contextMenu { IssueKeyMenu(key: child.key, onOpen: onOpen) }
+    }
+}
+
+/// The parent at the start of the header: type, key and title. Opens the parent.
+private struct ParentBreadcrumb: View {
+    let parent: JiraIssue.IssueRef
+    let onOpen: (String) -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button { onOpen(parent.key) } label: {
+            HStack(spacing: 5) {
+                if let typeName = parent.fields?.issueType?.name {
+                    IssueTypeBadge(name: typeName, iconOnly: true)
+                }
+                Text(parent.key)
+                    .monospaced()
+                    .fixedSize()
+                if let summary = parent.fields?.summary {
+                    Text(summary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .font(.callout)
+            .foregroundStyle(isHovered ? .primary : .secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(isHovered ? Color.primary.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Keeps the text flush with the title below; the padding is only for the hover highlight.
+        .padding(.leading, -6)
+        .onHover { isHovered = $0 }
+        .help("Open parent \(parent.key)")
+        .contextMenu { IssueKeyMenu(key: parent.key, onOpen: onOpen) }
+    }
+}
+
+/// The parent in the details column: type, key, status and title. Opens the parent.
+private struct ParentCard: View {
+    let parent: JiraIssue.IssueRef
+    let onOpen: (String) -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button { onOpen(parent.key) } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    if let typeName = parent.fields?.issueType?.name {
+                        IssueTypeBadge(name: typeName, iconOnly: true)
+                    }
+                    Text(parent.key).font(.callout.monospaced())
+                    Spacer(minLength: 4)
+                    if let status = parent.fields?.status {
+                        StatusBadge(status: status)
+                    }
+                }
+                if let summary = parent.fields?.summary {
+                    Text(summary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(isHovered ? 0.08 : 0.04), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Open \(parent.key)")
+        .contextMenu { IssueKeyMenu(key: parent.key, onOpen: onOpen) }
+    }
+}
+
+/// Open, Open in Jira and Copy Key, as in issue lists.
+private struct IssueKeyMenu: View {
+    let key: String
+    let onOpen: (String) -> Void
+
+    @Environment(SessionStore.self) private var session
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        Button("Open \(key)") { onOpen(key) }
+        if let client = session.client {
+            Button("Open in Jira") { openURL(client.browseURL(for: key)) }
+        }
+        Button("Copy Key") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(key, forType: .string)
+        }
     }
 }
 

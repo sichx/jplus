@@ -55,7 +55,7 @@ struct HomeView: View {
             NavigationStack(path: $path) {
                 detail
                     .navigationDestination(for: String.self) { key in
-                        IssueDetailView(key: key)
+                        IssueDetailView(key: key, onOpenIssue: pushIssue)
                     }
                     .navigationDestination(for: VersionRoute.self) { route in
                         VersionDetailView(route: route, onOpenIssue: pushIssue)
@@ -307,7 +307,7 @@ struct HomeView: View {
         case .newTicket:
             NewTicketView(suggestedProjectKey: recentProjectKey, onCreated: pushIssue)
         case .issue(let key):
-            IssueDetailView(key: key)
+            IssueDetailView(key: key, onOpenIssue: pushIssue)
                 .id(key)
         case nil:
             ContentUnavailableView("Nothing Selected", systemImage: "sidebar.left",

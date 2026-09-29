@@ -39,9 +39,18 @@ struct IssueSummarySortComparator: SortComparator, Hashable, Sendable {
 }
 
 /// Table of issues with double-click to open. Shared by search and versions.
-struct IssueListView: View {
+struct IssueListView<FilterAccessory: View>: View {
     let issues: [IssueSummary]
     let onOpen: (String) -> Void
+    /// Controls shown to the left of the filter field, such as a status toggle.
+    let filterAccessory: FilterAccessory
+
+    init(issues: [IssueSummary], onOpen: @escaping (String) -> Void,
+         @ViewBuilder filterAccessory: () -> FilterAccessory) {
+        self.issues = issues
+        self.onOpen = onOpen
+        self.filterAccessory = filterAccessory()
+    }
 
     @Environment(SessionStore.self) private var session
     @Environment(\.openURL) private var openURL
@@ -77,6 +86,8 @@ struct IssueListView: View {
     private var filterBar: some View {
         HStack(spacing: 8) {
             if !filterExpanded { Spacer(minLength: 0) }
+
+            filterAccessory
 
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
@@ -170,6 +181,12 @@ struct IssueListView: View {
     private func key(for ids: Set<IssueSummary.ID>) -> String? {
         guard let id = ids.first else { return nil }
         return issues.first { $0.id == id }?.key
+    }
+}
+
+extension IssueListView where FilterAccessory == EmptyView {
+    init(issues: [IssueSummary], onOpen: @escaping (String) -> Void) {
+        self.init(issues: issues, onOpen: onOpen) { EmptyView() }
     }
 }
 

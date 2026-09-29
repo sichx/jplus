@@ -10,11 +10,12 @@ A native macOS client for Jira Cloud, built with SwiftUI. Browsing is read-only;
 - [x] Open any issue by key (e.g. `vpe-5555`) or pasted browse URL; recents list (7 shown, Load More / View All / Collapse)
 - [x] ⌘K palette: jump to an issue or version with live suggestions and title preview
 - [x] Issue detail: fields, description and comments (native ADF rendering)
+- [x] Parent, subtasks and an epic's child issues on the issue detail, with progress; click to open
 - [x] Images and files attached in descriptions and comments, shown inline; click to Quick Look
 - [x] Linked Figma designs on the issue detail, with Open in Figma and Dev Mode
 - [x] Google-style search: plain words, typo-tolerant, ranked results with snippets and "Did you mean"; JQL kept as Advanced search
 - [x] Ticket details and attachments in a right-hand column (⌥⌘0 to show or hide)
-- [x] Versions per project with progress, drilling into each version's issues
+- [x] Versions per project with progress, drilling into each version's issues; Hide completed toggle
 - [x] New Ticket: drop/paste/choose a screenshot, create the issue, attach the image
 - [x] Optional Draft with Claude: summary, description and type proposed from the screenshot
 - [ ] Boards and sprints
@@ -169,6 +170,27 @@ field needs `@optIn(to: "GraphStoreIssueAssociatedDesign")` and an
 fails, the issue still loads; images then fall back to matching their alt
 text, which Jira sets to the file name.
 
+## Parents, subtasks and child issues
+
+A sub-task or an epic's issue shows its parent at the start of the header
+(type, key and title) and as a card under Parent in the right-hand column,
+with the parent's status. Click either to open the parent; right-click to
+open it in Jira or copy the key.
+
+Below the description, Subtasks (Child issues on an epic) lists each child
+with its type, key, title, assignee and status, plus how many are done.
+Lists longer than ten start collapsed. The rows come from
+`parent = KEY ORDER BY rank ASC`, which also finds an epic's children and
+includes assignees; until that search returns (or if it fails) the sub-tasks
+embedded in the issue are listed without assignees.
+
+## Versions
+
+Hide completed, left of the filter field on a version's issue list, drops
+issues whose status is in Jira's Done category (Done, Won't Do) by adding
+`statusCategory != Done` to the query, so paging only fetches open issues.
+The choice is remembered across versions.
+
 ## App icon
 
 The icon source is [Design/jplus-icon.svg](Design/jplus-icon.svg): a bold black
@@ -230,7 +252,7 @@ JPlus/
     VersionsView.swift      Project picker + grouped versions with progress bars
     VersionDetailView.swift One version's header and issues
     IssueListView.swift     Shared issue table + footer
-    IssueDetailView.swift   Issue header, description, designs, comments; fields and attachments column
+    IssueDetailView.swift   Issue header and parent, description, subtasks, designs, comments; fields and attachments column
     CommandPaletteView.swift ⌘K overlay: search box, suggestions, preview
     IssueBadges.swift       Status/type/priority badges, person cell, tags
     ADFView.swift           Native ADF renderer, including images and attached files

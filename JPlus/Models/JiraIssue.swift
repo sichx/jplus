@@ -19,13 +19,14 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
         let labels: [String]
         let components: [Named]
         let fixVersions: [Named]
-        let parent: Parent?
+        let parent: IssueRef?
+        let subtasks: [IssueRef]?
         let comment: CommentPage?
         let attachments: [Attachment]?
 
         enum CodingKeys: String, CodingKey {
             case summary, description, status, priority, assignee, reporter
-            case created, updated, labels, components, fixVersions, parent, comment
+            case created, updated, labels, components, fixVersions, parent, subtasks, comment
             case issueType = "issuetype"
             case attachments = "attachment"
         }
@@ -34,6 +35,9 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
     struct Status: Decodable, Hashable, Sendable {
         let name: String
         let statusCategory: StatusCategory?
+
+        /// True for statuses in Jira's Done category, such as Done and Won't Do.
+        var isDone: Bool { statusCategory?.key == "done" }
     }
 
     struct StatusCategory: Decodable, Hashable, Sendable {
@@ -45,6 +49,13 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
     struct IssueType: Decodable, Hashable, Sendable {
         let name: String
         let subtask: Bool?
+        /// 1 for epics, 0 for standard issues, -1 for sub-tasks.
+        let hierarchyLevel: Int?
+
+        /// Epics and above, whose children are issues rather than sub-tasks.
+        var isEpicLevel: Bool {
+            (hierarchyLevel ?? 0) > 0 || name.caseInsensitiveCompare("Epic") == .orderedSame
+        }
     }
 
     struct Priority: Decodable, Hashable, Sendable {
@@ -55,12 +66,20 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
         let name: String
     }
 
-    struct Parent: Decodable, Hashable, Sendable {
+    /// Another issue as Jira embeds it in this one: the parent, or a sub-task.
+    struct IssueRef: Decodable, Hashable, Sendable {
         let key: String
-        let fields: ParentFields?
+        let fields: Fields?
 
-        struct ParentFields: Decodable, Hashable, Sendable {
+        struct Fields: Decodable, Hashable, Sendable {
             let summary: String?
+            let status: Status?
+            let issueType: IssueType?
+
+            enum CodingKeys: String, CodingKey {
+                case summary, status
+                case issueType = "issuetype"
+            }
         }
     }
 
@@ -92,7 +111,7 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
     /// Field list requested from the API; keep in sync with `Fields`.
     static let requestedFields = [
         "summary", "description", "status", "issuetype", "priority", "assignee", "reporter",
-        "created", "updated", "labels", "components", "fixVersions", "parent", "comment", "attachment",
+        "created", "updated", "labels", "components", "fixVersions", "parent", "subtasks", "comment", "attachment",
     ]
 }
 
