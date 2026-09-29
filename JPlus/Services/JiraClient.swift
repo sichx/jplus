@@ -180,6 +180,19 @@ struct JiraClient: Sendable {
         return all
     }
 
+    /// Every version of a project in one response, without issue counts.
+    func versionsWithoutCounts(projectKey: String) async throws -> [JiraVersion] {
+        try await get("/rest/api/3/project/\(projectKey)/versions")
+    }
+
+    /// Adds or removes one fix version, leaving the issue's others as they are,
+    /// so concurrent changes to different versions can't undo each other.
+    func setFixVersion(id versionID: String, included: Bool, onIssue key: String) async throws {
+        try await put("/rest/api/3/issue/\(key)", json: [
+            "update": ["fixVersions": [[included ? "add" : "remove": ["id": versionID]]]],
+        ])
+    }
+
     /// Project metadata including the issue types available for creation.
     func projectDetail(key: String) async throws -> JiraProjectDetail {
         try await get("/rest/api/3/project/\(key)")
@@ -389,6 +402,14 @@ struct JiraClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: json)
         return try await send(request)
+    }
+
+    /// For edits, which answer 204 No Content.
+    func put(_ path: String, json: [String: Any]) async throws {
+        var request = makeRequest(path: path, method: "PUT")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: json)
+        _ = try await sendData(request)
     }
 
     /// Atlassian's GraphQL gateway on the site domain accepts the same Basic auth.

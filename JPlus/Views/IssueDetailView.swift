@@ -46,7 +46,7 @@ struct IssueDetailView: View {
         .inspector(isPresented: $showDetailsPane) {
             Group {
                 if case .loaded(let issue) = phase {
-                    IssueDetailsPane(issue: issue, onOpenIssue: onOpenIssue)
+                    IssueDetailsPane(issue: issue, onOpenIssue: onOpenIssue, onChanged: reloadIssue)
                 } else {
                     Color.clear
                 }
@@ -134,6 +134,12 @@ struct IssueDetailView: View {
         }
         if let fetched = await fetchedChildren { children = fetched }
         if let fetched = await fetchedExtras { extras = fetched }
+    }
+
+    /// Re-reads the issue after an edit, keeping the page on screen.
+    private func reloadIssue() async {
+        guard let client = session.client, let issue = try? await client.issue(key: key) else { return }
+        phase = .loaded(issue)
     }
 
     /// Nil if the search fails, so a refresh keeps what's already shown.
@@ -266,6 +272,8 @@ private struct IssueContentView: View {
 private struct IssueDetailsPane: View {
     let issue: JiraIssue
     let onOpenIssue: (String) -> Void
+    /// Called after an edit is saved, to reload the issue.
+    let onChanged: () async -> Void
 
     @State private var copiedPromptToast = false
 
@@ -290,9 +298,8 @@ private struct IssueDetailsPane: View {
                     if let parent = fields.parent {
                         field("Parent") { ParentCard(parent: parent, onOpen: onOpenIssue) }
                     }
-                    if !fields.fixVersions.isEmpty {
-                        field("Fix versions") { TagList(items: fields.fixVersions.map(\.name)) }
-                    }
+                    // Always shown, so a version can be added to an issue without one.
+                    field("Fix versions") { FixVersionsField(issue: issue, onChanged: onChanged) }
                     if !fields.components.isEmpty {
                         field("Components") { TagList(items: fields.components.map(\.name)) }
                     }
@@ -458,6 +465,202 @@ private struct AttachmentRow: View {
             parts.append(created.formatted(date: .abbreviated, time: .omitted))
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Fix versions
+
+/// The issue's fix versions. Click to check or uncheck versions in a popover.
+private struct FixVersionsField: View {
+    let issue: JiraIssue
+    let onChanged: () async -> Void
+
+    @State private var isEditing = false
+    @State private var isHovered = false
+    /// The project's versions, loaded when the popover first opens and kept for reopening.
+    @State private var projectVersions: [JiraVersion]?
+
+    var body: some View {
+        Button { isEditing = true } label: {
+            HStack(alignment: .top, spacing: 6) {
+                if issue.fields.fixVersions.isEmpty {
+                    Text("None").foregroundStyle(.secondary)
+                } else {
+                    TagList(items: issue.fields.fixVersions.map(\.name))
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "pencil")
+                    .foregroundStyle(.secondary)
+                    .opacity(isHovered || isEditing ? 1 : 0)
+            }
+            .padding(4)
+            .background(isHovered || isEditing ? Color.primary.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // The padding is only for the hover highlight; keep the text in line with the other fields.
+        .padding(-4)
+        .onHover { isHovered = $0 }
+        .help("Change fix versions")
+        .popover(isPresented: $isEditing, arrowEdge: .leading) {
+            FixVersionsPicker(issue: issue, projectVersions: $projectVersions, onChanged: onChanged)
+        }
+    }
+}
+
+/// A checkbox per version of the issue's project. Each click is saved at once.
+private struct FixVersionsPicker: View {
+    let issue: JiraIssue
+    @Binding var projectVersions: [JiraVersion]?
+    let onChanged: () async -> Void
+
+    @Environment(SessionStore.self) private var session
+    @State private var checked: Set<String> = []
+    /// Versions the issue had when the popover opened. They stay in the top
+    /// list while it's open, so unchecking one doesn't move it away.
+    @State private var initiallyChecked: Set<String> = []
+    @State private var saving: Set<String> = []
+    @State private var showsReleased = false
+    @State private var loadError: String?
+    @State private var saveError: String?
+
+    /// Past this many rows the list scrolls instead of growing the popover.
+    private static let maxUnscrolledRows = 12
+
+    /// Unreleased versions, plus any the issue had, lowest first ("v1.9" before "v1.17").
+    private var topVersions: [JiraVersion] {
+        (projectVersions ?? [])
+            .filter { (!$0.released && !$0.archived) || initiallyChecked.contains($0.id) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Released versions the issue didn't have, most recently released first.
+    /// By date rather than name, since names mix schemes ("App_05_17_2024", "V1.0.1").
+    private var releasedVersions: [JiraVersion] {
+        (projectVersions ?? [])
+            .filter { $0.released && !$0.archived && !initiallyChecked.contains($0.id) }
+            .sorted {
+                // `yyyy-MM-dd` strings sort by date; undated versions go last.
+                let (a, b) = ($0.releaseDate ?? "", $1.releaseDate ?? "")
+                return a != b ? a > b : $0.name.localizedStandardCompare($1.name) == .orderedDescending
+            }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if projectVersions != nil {
+                let rowCount = topVersions.count + (showsReleased ? releasedVersions.count : 0)
+                if rowCount > Self.maxUnscrolledRows {
+                    ScrollView { list }
+                        .frame(height: 360)
+                } else {
+                    list
+                }
+            } else if let loadError {
+                Label(loadError, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(12)
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading versions…").foregroundStyle(.secondary)
+                }
+                .padding(12)
+            }
+
+            if let saveError {
+                Divider()
+                Label(saveError, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(10)
+            }
+        }
+        .frame(width: 280, alignment: .leading)
+        .task { await start() }
+    }
+
+    private var list: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if topVersions.isEmpty {
+                Text("No unreleased versions").foregroundStyle(.secondary)
+            }
+            ForEach(topVersions) { row($0) }
+            if !releasedVersions.isEmpty {
+                // Not a DisclosureGroup: its content is inset, which knocks the dates out of line.
+                Button {
+                    showsReleased.toggle()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .rotationEffect(.degrees(showsReleased ? 90 : 0))
+                            .frame(width: 14)
+                        Text("Released (\(releasedVersions.count))")
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
+                if showsReleased {
+                    ForEach(releasedVersions) { row($0) }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func row(_ version: JiraVersion) -> some View {
+        HStack(spacing: 8) {
+            Toggle(version.name, isOn: Binding(
+                get: { checked.contains(version.id) },
+                set: { include in Task { await save(version, included: include) } }
+            ))
+            .toggleStyle(.checkbox)
+            .disabled(saving.contains(version.id))
+            Spacer(minLength: 8)
+            if saving.contains(version.id) {
+                ProgressView().controlSize(.mini)
+            } else if let day = version.releaseDay {
+                Text(day.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption)
+                    .foregroundStyle(version.overdue == true ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                    .help(version.overdue == true ? "Overdue: past its release date" : "Release date")
+            }
+        }
+    }
+
+    private func start() async {
+        checked = Set(issue.fields.fixVersions.map(\.id))
+        initiallyChecked = checked
+        guard projectVersions == nil, let client = session.client else { return }
+        do {
+            projectVersions = try await client.versionsWithoutCounts(projectKey: issue.projectKey)
+        } catch {
+            loadError = "Couldn't load versions: \(error.localizedDescription)"
+        }
+    }
+
+    /// Checks or unchecks straight away, then saves; undone if Jira refuses.
+    private func save(_ version: JiraVersion, included: Bool) async {
+        guard let client = session.client, !saving.contains(version.id) else { return }
+        saveError = nil
+        saving.insert(version.id)
+        if included { checked.insert(version.id) } else { checked.remove(version.id) }
+        do {
+            try await client.setFixVersion(id: version.id, included: included, onIssue: issue.key)
+            saving.remove(version.id)
+            await onChanged()
+        } catch {
+            saving.remove(version.id)
+            if included { checked.remove(version.id) } else { checked.insert(version.id) }
+            saveError = "Couldn't \(included ? "add" : "remove") \(version.name): \(error.localizedDescription)"
+        }
     }
 }
 

@@ -18,7 +18,7 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
         let updated: Date
         let labels: [String]
         let components: [Named]
-        let fixVersions: [Named]
+        let fixVersions: [VersionRef]
         let parent: IssueRef?
         let subtasks: [IssueRef]?
         let comment: CommentPage?
@@ -65,6 +65,15 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
     struct Named: Decodable, Hashable, Sendable {
         let name: String
     }
+
+    /// A fix version as embedded in an issue.
+    struct VersionRef: Decodable, Hashable, Sendable {
+        let id: String
+        let name: String
+    }
+
+    /// The project part of the key: "VPE" for "VPE-5553".
+    var projectKey: String { String(key.prefix { $0 != "-" }) }
 
     /// Another issue as Jira embeds it in this one: the parent, or a sub-task.
     struct IssueRef: Decodable, Hashable, Sendable {

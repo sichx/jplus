@@ -1,6 +1,6 @@
 # JPlus
 
-A native macOS client for Jira Cloud, built with SwiftUI. Browsing is read-only; the one write path is creating a ticket from a screenshot.
+A native macOS client for Jira Cloud, built with SwiftUI. Browsing is read-only; the write paths are creating a ticket from a screenshot and changing an issue's fix versions.
 
 ## Status
 
@@ -15,6 +15,7 @@ A native macOS client for Jira Cloud, built with SwiftUI. Browsing is read-only;
 - [x] Linked Figma designs on the issue detail, with Open in Figma and Dev Mode
 - [x] Google-style search: plain words, typo-tolerant, ranked results with snippets and "Did you mean"; JQL kept as Advanced search
 - [x] Ticket details and attachments in a right-hand column (⌥⌘0 to show or hide)
+- [x] Change an issue's fix versions from the details column
 - [x] Versions per project with progress, drilling into each version's issues; Hide completed toggle
 - [x] New Ticket: drop/paste/choose a screenshot, create the issue, attach the image
 - [x] Optional Draft with Claude: summary, description and type proposed from the screenshot
@@ -184,6 +185,18 @@ Lists longer than ten start collapsed. The rows come from
 includes assignees; until that search returns (or if it fails) the sub-tasks
 embedded in the issue are listed without assignees.
 
+## Changing fix versions
+
+Click Fix versions in an issue's right-hand column (it reads None when the
+issue has none). A popover lists the project's unreleased versions, plus any
+the issue already has, with release dates (orange when overdue); released
+versions sit under Released, most recently released first. Each checkbox
+saves as soon as it's clicked with `PUT /rest/api/3/issue/{key}` and an
+`update.fixVersions` add or remove, so only that one version changes and
+edits made elsewhere are kept. If Jira refuses, the box flips back and Jira's
+message is shown. Versions come from `/rest/api/3/project/{key}/versions`,
+loaded when the popover first opens.
+
 ## Versions
 
 Hide completed, left of the filter field on a version's issue list, drops
@@ -255,7 +268,7 @@ JPlus/
     VersionsView.swift      Project picker + grouped versions with progress bars
     VersionDetailView.swift One version's header and issues
     IssueListView.swift     Shared issue table + footer
-    IssueDetailView.swift   Issue header and parent, description, subtasks, designs, comments; fields and attachments column
+    IssueDetailView.swift   Issue header and parent, description, subtasks, designs, comments; fields (fix versions editable) and attachments column
     CommandPaletteView.swift ⌘K overlay: search box, suggestions, preview
     IssueBadges.swift       Status/type/priority badges, person cell, tags
     ADFView.swift           Native ADF renderer, including images and attached files
