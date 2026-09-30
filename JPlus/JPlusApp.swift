@@ -44,6 +44,7 @@ struct JPlusApp: App {
         Settings {
             SettingsView()
                 .environment(settings)
+                .environment(session)
         }
     }
 }

@@ -48,14 +48,27 @@ final class AttachmentStore {
         return image
     }
 
+    /// Deletes every downloaded attachment and forgets the decoded images.
+    func clear() {
+        downloads.values.forEach { $0.cancel() }
+        downloads = [:]
+        images.removeAllObjects()
+        thumbnails.removeAllObjects()
+        try? FileManager.default.removeItem(at: Self.folder)
+    }
+
+    /// Where downloaded attachments are kept, for every site.
+    static var folder: URL {
+        FileManager.default.temporaryDirectory.appending(path: "Attachments", directoryHint: .isDirectory)
+    }
+
     /// `…/Attachments/<site>/<attachment id>/<file name>`. The real file name
     /// is kept because Quick Look shows it as the title.
     private static func location(of attachment: JiraIssue.Attachment, site: String) -> URL {
         let name = attachment.filename
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
-        return FileManager.default.temporaryDirectory
-            .appending(path: "Attachments", directoryHint: .isDirectory)
+        return folder
             .appending(path: site, directoryHint: .isDirectory)
             .appending(path: attachment.id, directoryHint: .isDirectory)
             .appending(path: name.isEmpty ? "attachment" : name, directoryHint: .notDirectory)

@@ -12,6 +12,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             KeyboardShortcutsSection()
+            StorageSection()
         }
         .formStyle(.grouped)
         .frame(width: 480)
@@ -51,6 +52,54 @@ struct KeyboardShortcutsSection: View {
                 }
             }
         }
+    }
+}
+
+/// How much the app has downloaded and cached, with a button to delete it.
+struct StorageSection: View {
+    @Environment(SessionStore.self) private var session
+    /// Bytes on disk; nil while measuring.
+    @State private var usage: Int64?
+    @State private var isClearing = false
+    @State private var wasCleared = false
+    @State private var confirmsClear = false
+
+    private var status: String {
+        if isClearing { return "Clearing…" }
+        if wasCleared { return "Cleared" }
+        guard let usage else { return "Calculating…" }
+        return usage == 0 ? "Nothing stored" : "Using \(usage.formatted(.byteCount(style: .file))) on this Mac"
+    }
+
+    var body: some View {
+        Section {
+            LabeledContent {
+                Button("Clear…") { confirmsClear = true }
+                    .disabled(isClearing)
+                    .confirmationDialog("Clear downloaded and cached data?", isPresented: $confirmsClear) {
+                        Button("Clear", role: .destructive) { Task { await clear() } }
+                    } message: {
+                        Text("Attachments download again when you open them, and the search index is rebuilt in the background.")
+                    }
+            } label: {
+                Text("Downloaded and cached data")
+                Text(status)
+            }
+        } header: {
+            Text("Storage")
+        } footer: {
+            Text("Removes downloaded attachments, the search index, remembered ticket titles and cached images, for every account. Your accounts, recent tickets, search history and settings are kept.")
+                .foregroundStyle(.secondary)
+        }
+        .task { usage = await LocalData.diskUsage() }
+    }
+
+    private func clear() async {
+        isClearing = true
+        await LocalData.clear(accountIDs: session.accounts.accounts.map(\.id))
+        usage = await LocalData.diskUsage()
+        isClearing = false
+        wasCleared = true
     }
 }
 

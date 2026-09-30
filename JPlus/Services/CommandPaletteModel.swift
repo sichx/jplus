@@ -248,6 +248,10 @@ enum IssueTitleCache {
         defaults.dictionary(forKey: key) as? [String: String] ?? [:]
     }
 
+    static func clear(in defaults: UserDefaults) {
+        defaults.removeObject(forKey: key)
+    }
+
     static func save(_ titles: [String: String], in defaults: UserDefaults) {
         guard !titles.isEmpty else { return }
         var merged = all(in: defaults)

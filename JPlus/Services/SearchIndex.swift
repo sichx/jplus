@@ -64,7 +64,21 @@ final class SearchIndex {
         let task = Task { await self.run(client: client, accountID: accountID) }
         prepareTask = task
         await task.value
+        // Unless `reset()` has since replaced it.
+        if prepareTask == task { prepareTask = nil }
+    }
+
+    /// Empties the index and stops a build in progress, e.g. after its saved
+    /// file was deleted. `prepare` builds it again from scratch.
+    func reset() {
+        prepareTask?.cancel()
         prepareTask = nil
+        entries = []
+        titleWords = []
+        builtAt = nil
+        syncedAt = nil
+        status = .idle
+        revision += 1
     }
 
     private func run(client: JiraClient, accountID: UUID) async {
@@ -82,9 +96,12 @@ final class SearchIndex {
             } else if Date.now.timeIntervalSince(syncedAt ?? .distantPast) > Self.refreshAge {
                 try await refresh(client: client)
             }
+            // A reset emptied the index while this ran; don't write the old one back.
+            if Task.isCancelled { return }
             status = .ready
             await Self.save(IndexFile(builtAt: builtAt ?? .now, syncedAt: syncedAt ?? .now, issues: entries), accountID: accountID)
         } catch {
+            if Task.isCancelled { return }
             status = entries.isEmpty ? .failed(error.localizedDescription) : .ready
         }
     }
@@ -129,6 +146,7 @@ final class SearchIndex {
             // On a first build, make titles searchable as they arrive.
             let showPartial = entries.isEmpty
             while let batch = try await group.next() {
+                try Task.checkCancellation()
                 for issue in batch { collected[issue.key] = issue }
                 if showPartial {
                     entries += batch
@@ -140,6 +158,7 @@ final class SearchIndex {
             }
         }
 
+        try Task.checkCancellation()
         apply(Array(collected.values))
         builtAt = started
         syncedAt = started
@@ -184,11 +203,28 @@ final class SearchIndex {
         let issues: [IndexedIssue]
     }
 
+    private static let filePrefix = "search-index-"
+
+    private static var folder: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appending(path: "JPlus", directoryHint: .isDirectory)
+    }
+
     private static func fileURL(accountID: UUID) -> URL? {
-        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
-        let folder = base.appending(path: "JPlus", directoryHint: .isDirectory)
+        guard let folder else { return nil }
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder.appending(path: "search-index-\(accountID.uuidString).json")
+        return folder.appending(path: "\(filePrefix)\(accountID.uuidString).json")
+    }
+
+    /// The saved index of every account.
+    static func savedFiles() -> [URL] {
+        guard let folder, let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return [] }
+        return files.filter { $0.lastPathComponent.hasPrefix(filePrefix) }
+    }
+
+    /// Deletes the saved index of every account.
+    static func deleteAll() {
+        for file in savedFiles() { try? FileManager.default.removeItem(at: file) }
     }
 
     private static func load(accountID: UUID) async -> IndexFile? {

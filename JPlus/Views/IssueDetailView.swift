@@ -19,6 +19,8 @@ struct IssueDetailView: View {
     @State private var phase: Phase = .loading
     @State private var extras = IssueExtras()
     @State private var children: IssueSearchPage?
+    /// The full comment list, which (unlike the issue's embedded comments) marks replies.
+    @State private var comments: [JiraIssue.Comment]?
     @State private var previewURL: URL?
     @State private var attachmentError: String?
     @AppStorage("showIssueDetailsPane") private var showDetailsPane = true
@@ -38,7 +40,7 @@ struct IssueDetailView: View {
                     Button("Try Again") { Task { await load() } }
                 }
             case .loaded(let issue):
-                IssueContentView(issue: issue, extras: extras, children: children, onOpenIssue: onOpenIssue, onChanged: reloadIssue)
+                IssueContentView(issue: issue, extras: extras, children: children, comments: comments, onOpenIssue: onOpenIssue, onChanged: reloadIssue)
             }
         }
         .navigationTitle(key)
@@ -123,6 +125,7 @@ struct IssueDetailView: View {
         // holding it up or failing it.
         async let fetchedExtras = loadExtras(using: client)
         async let fetchedChildren = loadChildren(using: client)
+        async let fetchedComments = try? client.allComments(issueKey: key)
         do {
             let issue = try await client.issue(key: key)
             phase = .loaded(issue)
@@ -134,13 +137,18 @@ struct IssueDetailView: View {
         } catch {
             phase = .failed(error.localizedDescription)
         }
+        if let fetched = await fetchedComments { comments = fetched }
         if let fetched = await fetchedChildren { children = fetched }
         if let fetched = await fetchedExtras { extras = fetched }
     }
 
     /// Re-reads the issue after an edit, keeping the page on screen.
     private func reloadIssue() async {
-        guard let client = session.client, let issue = try? await client.issue(key: key) else { return }
+        guard let client = session.client else { return }
+        async let fetchedComments = try? client.allComments(issueKey: key)
+        guard let issue = try? await client.issue(key: key) else { return }
+        // Set together, so a new comment doesn't show flat and then jump into its thread.
+        if let fetched = await fetchedComments { comments = fetched }
         phase = .loaded(issue)
         if let id = session.currentAccountID {
             IssueTitleCache.save([issue.key: issue.fields.summary], in: AccountDefaults.store(for: id))
@@ -171,6 +179,8 @@ private struct IssueContentView: View {
     let extras: IssueExtras
     /// Search results for the issue's children; nil until loaded.
     let children: IssueSearchPage?
+    /// Every comment, with reply links; nil until loaded.
+    let comments: [JiraIssue.Comment]?
     let onOpenIssue: (String) -> Void
     /// Called after an edit is saved, to reload the issue.
     let onChanged: () async -> Void
@@ -212,7 +222,7 @@ private struct IssueContentView: View {
                     }
                 }
                 Divider()
-                comments
+                CommentsSection(issue: issue, comments: comments, onChanged: onChanged)
             }
             .padding(24)
             .frame(maxWidth: 820, alignment: .leading)
@@ -239,21 +249,6 @@ private struct IssueContentView: View {
                     .fixedSize()
             }
             EditableSummary(issue: issue, onChanged: onChanged)
-        }
-    }
-
-    private var comments: some View {
-        let list = fields.comment?.comments ?? []
-        return section("Comments (\(fields.comment?.total ?? list.count))") {
-            VStack(alignment: .leading, spacing: 16) {
-                if list.isEmpty {
-                    Text("No comments").foregroundStyle(.secondary)
-                }
-                ForEach(list) { comment in
-                    CommentView(comment: comment)
-                }
-                CommentComposer(issue: issue, onChanged: onChanged)
-            }
         }
     }
 
@@ -986,30 +981,5 @@ private struct ReadyForDevBadge: View {
             .padding(.vertical, 2)
             .background(Color.green.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
             .foregroundStyle(.green)
-    }
-}
-
-private struct CommentView: View {
-    let comment: JiraIssue.Comment
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            AvatarView(user: comment.author, size: 28)
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(comment.author?.displayName ?? "Unknown").fontWeight(.medium)
-                    Text(comment.created, format: .relative(presentation: .named))
-                        .foregroundStyle(.secondary)
-                        .help(comment.created.formatted(date: .abbreviated, time: .shortened))
-                    if comment.updated.timeIntervalSince(comment.created) > 60 {
-                        Text("(edited)").foregroundStyle(.tertiary)
-                    }
-                }
-                .font(.callout)
-                if let body = comment.body {
-                    ADFView(node: body)
-                }
-            }
-        }
     }
 }

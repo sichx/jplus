@@ -18,6 +18,8 @@ A native macOS client for Jira Cloud, built with SwiftUI. Besides browsing, it c
 - [x] ⇧⌘O opens the current issue, search, list or version in Jira in the browser
 - [x] Change an issue's fix versions from the details column
 - [x] Edit an issue's title, description, status, priority, assignee and reporter; add comments
+- [x] Comments shown as threads; reply to a comment
+- [x] Settings: clear downloaded and cached data
 - [x] Versions per project with progress, drilling into each version's issues; Hide completed toggle
 - [x] New Ticket: drop/paste/choose a screenshot, create the issue, attach the image
 - [x] Optional Draft with Claude: summary, description and type proposed from the screenshot
@@ -227,6 +229,31 @@ its message is shown next to the control.
   plain-text edit. Mentions appear as `[~accountid:…]`. ⌘↩ saves, Esc cancels.
 - **Comments**: the box under the comments. Also wiki markup, posted with
   `POST /rest/api/2/issue/{key}/comment`; ⌘↩ posts.
+- **Replies**: Reply under any comment opens a box in that thread. REST can't
+  create replies yet, so they go through the GraphQL gateway's
+  `jira.addComment` with `threadParentId` (the id of the comment that started
+  the thread) and the issue's ARI. That mutation takes ADF, not wiki markup,
+  so a reply is plain text converted like a new ticket's description
+  (`- ` bullets, `1. ` numbered lines).
+
+## Comment threads
+
+Comments are shown as threads: each top-level comment with its replies
+indented beside a line, oldest first. The comments embedded in
+`GET /rest/api/3/issue/{key}` don't say which are replies, so the page also
+loads `GET /rest/api/3/issue/{key}/comment`, whose comments carry a numeric
+`parentId`. Until that arrives (or if it fails) the embedded comments are
+listed flat. A reply to a reply is grouped under the comment that started
+the thread, as in Jira.
+
+## Clearing downloaded and cached data
+
+Settings > Storage shows how much the app has stored and has a Clear…
+button. It removes downloaded attachments (the app's temporary
+`Attachments` folder), every account's saved search index and remembered
+ticket titles, and cached network responses such as avatars. Accounts and
+tokens, recent tickets, search history, project choices and the Claude API
+key are kept. The search index is rebuilt in the background afterwards.
 
 ## Versions
 
@@ -277,6 +304,7 @@ JPlus/
     IssueQuery.swift        Paginated JQL result set for list views
     ScreenshotImport.swift  Drop/paste/file -> Screenshot (PNG normalisation, downscale)
     AttachmentStore.swift   Downloads attachments once, caches files and decoded images
+    LocalData.swift         Measures and clears downloaded and cached data
     ClaudeClient.swift      Raw HTTP call to the Claude Messages API (structured JSON)
     ClaudeDrafter.swift     Screenshot -> ticket draft
     CommandPaletteModel.swift ⌘K search: key lookup, text search, version filter, title cache
@@ -293,14 +321,14 @@ JPlus/
     MyIssuesView.swift      Open issues assigned to you
     MentionsView.swift      @-mentions of you, grouped by day
     NewTicketView.swift     Screenshot well, fields, Draft with Claude, Create
-    SettingsView.swift      Settings window (API key)
+    SettingsView.swift      Settings window (API key, keyboard shortcuts, storage)
     FuzzySearchView.swift   Google-style search page (and the switch to JQL)
     SearchView.swift        Advanced JQL search: presets, history, results
     VersionsView.swift      Project picker + grouped versions with progress bars
     VersionDetailView.swift One version's header and issues
     IssueListView.swift     Shared issue table + footer
     IssueDetailView.swift   Issue header and parent, description, subtasks, designs, comments; fields and attachments column
-    IssueEditing.swift      Title, status, priority, assignee/reporter, description and comment editors
+    IssueEditing.swift      Title, status, priority, assignee/reporter and description editors; comment threads, comment and reply boxes
     CommandPaletteView.swift ⌘K overlay: search box, suggestions, preview
     IssueBadges.swift       Status/type/priority badges, person cell, tags
     ADFView.swift           Native ADF renderer, including images and attached files

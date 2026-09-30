@@ -104,6 +104,62 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
         let body: ADFNode?
         let created: Date
         let updated: Date
+        /// The comment this one replies to. Only the comment list sends it
+        /// (`GET …/issue/{key}/comment`), not the comments embedded in an issue.
+        let parentId: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, author, body, created, updated, parentId
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            author = try container.decodeIfPresent(JiraUser.self, forKey: .author)
+            body = try container.decodeIfPresent(ADFNode.self, forKey: .body)
+            created = try container.decode(Date.self, forKey: .created)
+            updated = try container.decode(Date.self, forKey: .updated)
+            // Jira sends ids as strings but this one as a number.
+            if let text = try? container.decode(String.self, forKey: .parentId) {
+                parentId = text
+            } else {
+                parentId = (try? container.decode(Int.self, forKey: .parentId)).map(String.init)
+            }
+        }
+    }
+
+    /// A top-level comment with the replies under it, oldest first.
+    struct CommentThread: Identifiable, Hashable, Sendable {
+        let root: Comment
+        let replies: [Comment]
+
+        var id: String { root.id }
+
+        /// Groups a flat comment list into threads, keeping its order. A reply
+        /// whose parent isn't in the list starts a thread of its own.
+        static func group(_ comments: [Comment]) -> [CommentThread] {
+            let byID = Dictionary(comments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            /// Follows replies-to-replies up to the comment that started the thread.
+            func rootID(of comment: Comment) -> String {
+                var current = comment
+                var seen: Set<String> = [current.id]
+                while let parentID = current.parentId, let parent = byID[parentID], seen.insert(parentID).inserted {
+                    current = parent
+                }
+                return current.id
+            }
+            var replies: [String: [Comment]] = [:]
+            var roots: [Comment] = []
+            for comment in comments {
+                let root = rootID(of: comment)
+                if root == comment.id {
+                    roots.append(comment)
+                } else {
+                    replies[root, default: []].append(comment)
+                }
+            }
+            return roots.map { CommentThread(root: $0, replies: replies[$0.id] ?? []) }
+        }
     }
 
     /// A file attached to the issue, including images pasted into the

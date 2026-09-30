@@ -702,10 +702,117 @@ struct DescriptionSection: View {
 
 // MARK: - Comments
 
-/// A box under the comments for adding one. ⌘↩ posts.
+/// The issue's comments as threads, each with a Reply button, and a box at
+/// the bottom for a new comment.
+struct CommentsSection: View {
+    let issue: JiraIssue
+    /// From the comment list, which says which comments are replies. Nil
+    /// until it loads; the comments embedded in the issue are shown flat meanwhile.
+    let comments: [JiraIssue.Comment]?
+    let onChanged: () async -> Void
+
+    /// The thread whose reply box is open.
+    @State private var replyingTo: String?
+
+    private var all: [JiraIssue.Comment] { comments ?? issue.fields.comment?.comments ?? [] }
+
+    var body: some View {
+        let all = all
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Comments (\(comments?.count ?? issue.fields.comment?.total ?? all.count))").font(.headline)
+            VStack(alignment: .leading, spacing: 18) {
+                if all.isEmpty {
+                    Text("No comments").foregroundStyle(.secondary)
+                }
+                ForEach(JiraIssue.CommentThread.group(all)) { thread in
+                    CommentThreadView(
+                        issue: issue,
+                        thread: thread,
+                        isReplying: replyingTo == thread.id,
+                        onReply: { replyingTo = thread.id },
+                        onEndReply: { replyingTo = nil },
+                        onChanged: onChanged
+                    )
+                }
+                CommentComposer(issue: issue, onChanged: onChanged)
+            }
+        }
+    }
+}
+
+/// One comment, its replies indented beside a line, and the reply box when open.
+private struct CommentThreadView: View {
+    let issue: JiraIssue
+    let thread: JiraIssue.CommentThread
+    let isReplying: Bool
+    let onReply: () -> Void
+    let onEndReply: () -> Void
+    let onChanged: () async -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            CommentView(comment: thread.root, onReply: onReply)
+            if !thread.replies.isEmpty || isReplying {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(thread.replies) { reply in
+                        CommentView(comment: reply, avatarSize: 22, onReply: onReply)
+                    }
+                    if isReplying {
+                        CommentComposer(issue: issue, replyTo: thread.root, onChanged: onChanged, onEndReply: onEndReply)
+                    }
+                }
+                // The line runs down from the middle of the first comment's
+                // avatar; replies start under that comment's text.
+                .padding(.leading, 23)
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(.quaternary).frame(width: 2)
+                }
+                .padding(.leading, 13)
+            }
+        }
+    }
+}
+
+private struct CommentView: View {
+    let comment: JiraIssue.Comment
+    var avatarSize: CGFloat = 28
+    let onReply: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            AvatarView(user: comment.author, size: avatarSize)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(comment.author?.displayName ?? "Unknown").fontWeight(.medium)
+                    Text(comment.created, format: .relative(presentation: .named))
+                        .foregroundStyle(.secondary)
+                        .help(comment.created.formatted(date: .abbreviated, time: .shortened))
+                    if comment.updated.timeIntervalSince(comment.created) > 60 {
+                        Text("(edited)").foregroundStyle(.tertiary)
+                    }
+                }
+                .font(.callout)
+                if let body = comment.body {
+                    ADFView(node: body)
+                }
+                Button("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Reply in this thread")
+            }
+        }
+    }
+}
+
+/// A box for a new comment, or for a reply when `replyTo` is set. ⌘↩ posts.
 struct CommentComposer: View {
     let issue: JiraIssue
+    /// The comment that started the thread being replied to; nil for a new comment.
+    var replyTo: JiraIssue.Comment?
     let onChanged: () async -> Void
+    /// Closes the reply box, after posting or on Cancel.
+    var onEndReply: () -> Void = {}
 
     @Environment(SessionStore.self) private var session
     @State private var draft = ""
@@ -713,12 +820,19 @@ struct CommentComposer: View {
     @State private var error: String?
     @FocusState private var isFocused: Bool
 
-    private var isExpanded: Bool { isFocused || !draft.isEmpty }
+    private var isReply: Bool { replyTo != nil }
+    /// A reply box is open because Reply was clicked, so it starts full size.
+    private var isExpanded: Bool { isReply || isFocused || !draft.isEmpty }
     private var canPost: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isPosting }
+
+    private var placeholder: String {
+        guard let replyTo else { return "Add a comment…" }
+        return "Reply to \(replyTo.author?.displayName ?? "this comment")…"
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            AvatarView(user: session.currentUser, size: 28)
+            AvatarView(user: session.currentUser, size: isReply ? 22 : 28)
             VStack(alignment: .leading, spacing: 8) {
                 ZStack(alignment: .topLeading) {
                     TextEditor(text: $draft)
@@ -727,33 +841,43 @@ struct CommentComposer: View {
                         .focused($isFocused)
                         .disabled(isPosting)
                     if draft.isEmpty {
-                        Text("Add a comment…")
+                        Text(placeholder)
                             .foregroundStyle(.tertiary)
                             .padding(.leading, 5)
                             .allowsHitTesting(false)
                     }
                 }
-                .frame(height: isExpanded ? 110 : 22)
+                .frame(height: isExpanded ? (isReply ? 80 : 110) : 22)
                 .padding(6)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(isFocused ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary)))
 
                 if isExpanded {
                     HStack(spacing: 8) {
-                        Button("Comment") { Task { await post() } }
+                        Button(isReply ? "Reply" : "Comment") { Task { await post() } }
                             .buttonStyle(.borderedProminent)
                             .disabled(!canPost)
                             .keyboardShortcut(isFocused ? KeyboardShortcut(.return, modifiers: .command) : nil)
-                            .help("Post comment (⌘↩)")
+                            .help(isReply ? "Post reply (⌘↩)" : "Post comment (⌘↩)")
                         Button("Cancel") {
                             draft = ""
                             error = nil
                             isFocused = false
+                            onEndReply()
                         }
                         .disabled(isPosting)
                         if isPosting { ProgressView().controlSize(.small) }
                         Spacer(minLength: 8)
-                        WikiMarkupHint()
+                        if isReply {
+                            // Replies go through a different Jira API, which takes plain text.
+                            Text("Plain text  ·  - bullet  ·  1. numbered")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .help("Replies are sent as plain text; wiki markup isn't converted")
+                        } else {
+                            WikiMarkupHint()
+                        }
                     }
                     .controlSize(.small)
                 }
@@ -761,6 +885,7 @@ struct CommentComposer: View {
             }
         }
         .animation(.snappy(duration: 0.15), value: isExpanded)
+        .onAppear { if isReply { isFocused = true } }
     }
 
     private func post() async {
@@ -768,10 +893,16 @@ struct CommentComposer: View {
         isPosting = true
         error = nil
         do {
-            try await client.addComment(wikiMarkup: draft, to: issue.key)
+            if let replyTo {
+                let cloudId = try await session.cloudId()
+                try await client.addReply(draft, toComment: replyTo.id, issueID: issue.id, cloudId: cloudId)
+            } else {
+                try await client.addComment(wikiMarkup: draft, to: issue.key)
+            }
             draft = ""
             isFocused = false
             await onChanged()
+            onEndReply()
         } catch {
             self.error = "Couldn't post: \(error.localizedDescription)"
         }

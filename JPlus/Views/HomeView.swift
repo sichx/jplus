@@ -72,6 +72,13 @@ struct HomeView: View {
                 await searchIndex.prepare(client: client, accountID: accountID)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .jplusLocalDataCleared)) { _ in
+            // The saved index is gone; drop the copy in memory and build a fresh one.
+            searchIndex.reset()
+            if let client = session.client, let accountID = session.currentAccountID {
+                Task { await searchIndex.prepare(client: client, accountID: accountID) }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .jplusNewTicket)) { _ in
             selection = .newTicket
         }

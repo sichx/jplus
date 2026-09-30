@@ -287,6 +287,50 @@ struct JiraClient: Sendable {
         let _: Created = try await post("/rest/api/2/issue/\(issueKey)/comment", json: ["body": wikiMarkup])
     }
 
+    /// Replies to a comment. REST can't create replies yet, so this uses the
+    /// GraphQL gateway's `addComment`, which takes ADF rather than wiki
+    /// markup: `text` is plain text, converted like a new ticket's description.
+    /// - Parameters:
+    ///   - parentID: The comment that started the thread.
+    ///   - issueID: The issue's numeric id, not its key.
+    func addReply(_ text: String, toComment parentID: String, issueID: String, cloudId: String) async throws {
+        struct Response: Decodable {
+            let data: DataField?
+            let errors: [Message]?
+            struct DataField: Decodable { let jira: Jira? }
+            struct Jira: Decodable { let addComment: Payload? }
+            struct Payload: Decodable {
+                let success: Bool
+                let errors: [Message]?
+            }
+            struct Message: Decodable { let message: String? }
+        }
+        let query = """
+        mutation JPlusAddComment($input: JiraAddCommentInput!) {
+          jira {
+            addComment(input: $input) {
+              success
+              errors { message }
+              comment { commentId }
+            }
+          }
+        }
+        """
+        let response: Response = try await graphQL(
+            operationName: "JPlusAddComment",
+            query: query,
+            variables: ["input": [
+                "issueId": "ari:cloud:jira:\(cloudId):issue/\(issueID)",
+                "content": ["version": 1, "jsonValue": ADFBuilder.document(from: text)],
+                "threadParentId": parentID,
+            ]]
+        )
+        guard let payload = response.data?.jira?.addComment, payload.success else {
+            let messages = (response.data?.jira?.addComment?.errors ?? response.errors ?? []).compactMap(\.message)
+            throw JiraError.http(status: 200, message: messages.isEmpty ? "Jira didn't accept the reply." : messages.joined(separator: " "))
+        }
+    }
+
     /// Project metadata including the issue types available for creation.
     func projectDetail(key: String) async throws -> JiraProjectDetail {
         try await get("/rest/api/3/project/\(key)")
