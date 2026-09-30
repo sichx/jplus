@@ -54,7 +54,8 @@ struct VersionDetailView: View {
                     Button("Open in Jira", systemImage: "safari") {
                         openURL(client.browseURL(projectKey: route.project.key, versionID: version.id))
                     }
-                    .help("Open this release in Jira")
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+                    .help("Open this release in Jira (⇧⌘O)")
                 }
             }
         }

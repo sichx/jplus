@@ -303,6 +303,112 @@ private struct TransitionPicker: View {
     }
 }
 
+// MARK: - Priority
+
+/// The priority; click to pick another.
+struct IssuePriorityField: View {
+    let issue: JiraIssue
+    let onChanged: () async -> Void
+
+    @State private var isEditing = false
+
+    var body: some View {
+        EditableFieldButton(help: "Change priority", isEditing: $isEditing) {
+            if let priority = issue.fields.priority {
+                PriorityLabel(name: priority.name)
+            } else {
+                Text("None").foregroundStyle(.secondary)
+            }
+        } editor: {
+            PriorityPicker(issue: issue, isPresented: $isEditing, onChanged: onChanged)
+        }
+    }
+}
+
+/// The priorities the issue allows, highest first. Picking one saves at once.
+private struct PriorityPicker: View {
+    let issue: JiraIssue
+    @Binding var isPresented: Bool
+    let onChanged: () async -> Void
+
+    @Environment(SessionStore.self) private var session
+    @State private var priorities: [JiraIssue.Priority]?
+    @State private var loadError: String?
+    @State private var saveError: String?
+    @State private var savingID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let priorities {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(priorities, id: \.self) { row($0) }
+                }
+                .padding(6)
+            } else if let loadError {
+                ErrorLabel(message: loadError).padding(12)
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading priorities…").foregroundStyle(.secondary)
+                }
+                .padding(12)
+            }
+            if let saveError {
+                Divider()
+                ErrorLabel(message: saveError).padding(10)
+            }
+        }
+        .frame(width: 220, alignment: .leading)
+        .task { await load() }
+    }
+
+    private func row(_ priority: JiraIssue.Priority) -> some View {
+        PickerRow {
+            Task { await choose(priority) }
+        } content: {
+            PriorityLabel(name: priority.name)
+            Spacer(minLength: 4)
+            if savingID != nil, savingID == priority.id {
+                ProgressView().controlSize(.mini)
+            } else if priority.name == issue.fields.priority?.name {
+                Image(systemName: "checkmark").foregroundStyle(.tint)
+            }
+        }
+        .disabled(savingID != nil)
+    }
+
+    private func load() async {
+        guard let client = session.client else { return }
+        do {
+            if let allowed = try await client.allowedPriorities(issueKey: issue.key), !allowed.isEmpty {
+                priorities = allowed
+            } else {
+                loadError = "Priority can't be changed on this issue."
+            }
+        } catch {
+            loadError = "Couldn't load priorities: \(error.localizedDescription)"
+        }
+    }
+
+    private func choose(_ priority: JiraIssue.Priority) async {
+        guard let client = session.client, savingID == nil, let id = priority.id else { return }
+        guard priority.name != issue.fields.priority?.name else {
+            isPresented = false
+            return
+        }
+        savingID = id
+        saveError = nil
+        do {
+            try await client.setPriority(id: id, onIssue: issue.key)
+            await onChanged()
+            isPresented = false
+        } catch {
+            saveError = "Couldn't change the priority: \(error.localizedDescription)"
+        }
+        savingID = nil
+    }
+}
+
 // MARK: - Assignee and reporter
 
 enum IssuePersonRole {

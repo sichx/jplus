@@ -51,6 +51,8 @@ struct JQLSearchView: View {
                     Button("Open in Jira", systemImage: "safari") {
                         openURL(client.browseURL(jql: query.jql))
                     }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+                    .help("Open this search in Jira (⇧⌘O)")
                 }
             }
         }

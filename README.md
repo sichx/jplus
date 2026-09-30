@@ -1,6 +1,6 @@
 # JPlus
 
-A native macOS client for Jira Cloud, built with SwiftUI. Besides browsing, it can create a ticket from a screenshot and edit an issue's title, description, status, assignee, reporter and fix versions, and add comments.
+A native macOS client for Jira Cloud, built with SwiftUI. Besides browsing, it can create a ticket from a screenshot and edit an issue's title, description, status, priority, assignee, reporter and fix versions, and add comments.
 
 ## Status
 
@@ -15,8 +15,9 @@ A native macOS client for Jira Cloud, built with SwiftUI. Besides browsing, it c
 - [x] Linked Figma designs on the issue detail, with Open in Figma and Dev Mode
 - [x] Google-style search: plain words, typo-tolerant, ranked results with snippets and "Did you mean"; JQL kept as Advanced search
 - [x] Ticket details and attachments in a right-hand column (⌥⌘0 to show or hide)
+- [x] ⇧⌘O opens the current issue, search, list or version in Jira in the browser
 - [x] Change an issue's fix versions from the details column
-- [x] Edit an issue's title, description, status, assignee and reporter; add comments
+- [x] Edit an issue's title, description, status, priority, assignee and reporter; add comments
 - [x] Versions per project with progress, drilling into each version's issues; Hide completed toggle
 - [x] New Ticket: drop/paste/choose a screenshot, create the issue, attach the image
 - [x] Optional Draft with Claude: summary, description and type proposed from the screenshot
@@ -211,6 +212,9 @@ its message is shown next to the control.
   e.g. VPE's "QA" transition goes to DEV REVIEW). Picking one posts it.
   Transitions that need a screen of extra fields fail with Jira's message; do
   those in Jira.
+- **Priority**: click it in the details column. The choices are the issue's
+  allowed values from `GET …/issue/{key}/editmeta`, in the site's order;
+  picking one saves `fields.priority`.
 - **Assignee / Reporter**: click the field in the details column and search.
   With nothing typed you're listed first. Assignee candidates come from
   `/rest/api/3/user/assignable/search` and are saved with
@@ -296,7 +300,7 @@ JPlus/
     VersionDetailView.swift One version's header and issues
     IssueListView.swift     Shared issue table + footer
     IssueDetailView.swift   Issue header and parent, description, subtasks, designs, comments; fields and attachments column
-    IssueEditing.swift      Title, status, assignee/reporter, description and comment editors
+    IssueEditing.swift      Title, status, priority, assignee/reporter, description and comment editors
     CommandPaletteView.swift ⌘K overlay: search box, suggestions, preview
     IssueBadges.swift       Status/type/priority badges, person cell, tags
     ADFView.swift           Native ADF renderer, including images and attached files

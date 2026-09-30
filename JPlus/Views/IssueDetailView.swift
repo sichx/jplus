@@ -82,6 +82,8 @@ struct IssueDetailView: View {
                     Button("Open in Jira", systemImage: "safari") {
                         openURL(client.browseURL(for: key))
                     }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+                    .help("Open this issue in Jira (⇧⌘O)")
                 }
             }
         }
@@ -289,9 +291,8 @@ private struct IssueDetailsPane: View {
                     field("Assignee") { IssuePersonField(issue: issue, role: .assignee, onChanged: onChanged) }
                     field("Reporter") { IssuePersonField(issue: issue, role: .reporter, onChanged: onChanged) }
                     field("Type") { IssueTypeBadge(name: fields.issueType.name) }
-                    if let priority = fields.priority {
-                        field("Priority") { PriorityLabel(name: priority.name) }
-                    }
+                    // Always shown, so a priority can be set on an issue without one.
+                    field("Priority") { IssuePriorityField(issue: issue, onChanged: onChanged) }
                     if let parent = fields.parent {
                         field("Parent") { ParentCard(parent: parent, onOpen: onOpenIssue) }
                     }

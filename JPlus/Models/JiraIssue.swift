@@ -59,6 +59,7 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
     }
 
     struct Priority: Decodable, Hashable, Sendable {
+        let id: String?
         let name: String
     }
 

@@ -21,6 +21,8 @@ struct MyIssuesView: View {
                         Button("Open in Jira", systemImage: "safari") {
                             openURL(client.browseURL(jql: Self.jql))
                         }
+                        .keyboardShortcut("o", modifiers: [.command, .shift])
+                        .help("Open these issues in Jira (⇧⌘O)")
                     }
                 }
             }

@@ -208,6 +208,23 @@ struct JiraClient: Sendable {
         try await put("/rest/api/3/issue/\(key)", json: ["fields": ["reporter": ["accountId": accountID]]])
     }
 
+    /// The priorities this issue can be given, in the site's order, or nil
+    /// if the issue's edit screen doesn't include Priority.
+    func allowedPriorities(issueKey: String) async throws -> [JiraIssue.Priority]? {
+        struct EditMeta: Decodable {
+            let fields: Fields
+            struct Fields: Decodable { let priority: Field? }
+            struct Field: Decodable { let allowedValues: [JiraIssue.Priority]? }
+        }
+        let meta: EditMeta = try await get("/rest/api/3/issue/\(issueKey)/editmeta")
+        return meta.fields.priority?.allowedValues
+    }
+
+    /// Changes an issue's priority.
+    func setPriority(id priorityID: String, onIssue key: String) async throws {
+        try await put("/rest/api/3/issue/\(key)", json: ["fields": ["priority": ["id": priorityID]]])
+    }
+
     /// People who can be assigned the issue, matching `query` by name or email.
     func assignableUsers(issueKey: String, query: String) async throws -> [JiraUser] {
         try await get("/rest/api/3/user/assignable/search", query: [

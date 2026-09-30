@@ -22,6 +22,8 @@ struct MentionsView: View {
                         Button("Open in Jira", systemImage: "safari") {
                             openURL(client.browseURL(jql: MentionsModel.jql))
                         }
+                        .keyboardShortcut("o", modifiers: [.command, .shift])
+                        .help("Open these issues in Jira (⇧⌘O)")
                     }
                 }
             }
