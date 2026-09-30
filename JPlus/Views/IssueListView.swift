@@ -165,7 +165,12 @@ struct IssueListView<FilterAccessory: View>: View {
             if let key = key(for: ids) {
                 Button("Open \(key)") { onOpen(key) }
                 if let client = session.client {
-                    Button("Open in Jira") { openURL(client.browseURL(for: key)) }
+                    let url = client.browseURL(for: key)
+                    Button("Open in Jira") { openURL(url) }
+                    Button("Copy URL") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                    }
                 }
                 Button("Copy Key") {
                     NSPasteboard.general.clearContents()

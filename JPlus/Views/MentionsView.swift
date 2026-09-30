@@ -83,18 +83,25 @@ struct MentionsView: View {
     private func menu(for mention: Mention) -> some View {
         Button("Open \(mention.issueKey)") { onOpenIssue(mention.issueKey) }
         if let client = session.client {
-            Button("Open in Jira") {
-                var url = client.browseURL(for: mention.issueKey)
-                if case .comment(let id) = mention.place {
-                    url.append(queryItems: [URLQueryItem(name: "focusedCommentId", value: id)])
-                }
-                openURL(url)
+            let url = jiraBrowseURL(for: mention, client: client)
+            Button("Open in Jira") { openURL(url) }
+            Button("Copy URL") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url.absoluteString, forType: .string)
             }
         }
         Button("Copy Key") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(mention.issueKey, forType: .string)
         }
+    }
+
+    private func jiraBrowseURL(for mention: Mention, client: JiraClient) -> URL {
+        var url = client.browseURL(for: mention.issueKey)
+        if case .comment(let id) = mention.place {
+            url.append(queryItems: [URLQueryItem(name: "focusedCommentId", value: id)])
+        }
+        return url
     }
 
     // MARK: - Grouping

@@ -882,7 +882,7 @@ private struct ParentCard: View {
     }
 }
 
-/// Open, Open in Jira and Copy Key, as in issue lists.
+/// Open, Open in Jira, Copy URL, and Copy Key, as in issue lists.
 private struct IssueKeyMenu: View {
     let key: String
     let onOpen: (String) -> Void
@@ -893,7 +893,12 @@ private struct IssueKeyMenu: View {
     var body: some View {
         Button("Open \(key)") { onOpen(key) }
         if let client = session.client {
-            Button("Open in Jira") { openURL(client.browseURL(for: key)) }
+            let url = client.browseURL(for: key)
+            Button("Open in Jira") { openURL(url) }
+            Button("Copy URL") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+            }
         }
         Button("Copy Key") {
             NSPasteboard.general.clearContents()

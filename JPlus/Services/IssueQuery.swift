@@ -4,6 +4,13 @@ import Observation
 /// Drives a paginated JQL result set for a list view.
 @Observable
 final class IssueQuery {
+    /// Target number of issues to pull on the first `run`.
+    static let initialPageSize = 200
+    static let loadMorePageSize = 50
+    /// With `IssueSummary` fields, Jira often returns at most 100 per request even
+    /// when `maxResults` is higher; the initial load pages until `initialPageSize`.
+    private static let jiraListFieldsPageCap = 100
+
     private(set) var jql = ""
     private(set) var issues: [IssueSummary] = []
     private(set) var isLoading = false
@@ -38,15 +45,42 @@ final class IssueQuery {
         isLoading = true
         defer { if generation == self.generation { isLoading = false } }
         do {
-            let page = try await client.search(jql: jql, nextPageToken: nextPageToken)
-            guard generation == self.generation else { return }
-            issues = replacing ? page.issues : issues + page.issues
-            nextPageToken = page.nextPageToken
-            hasMore = page.nextPageToken != nil && page.isLast != true
+            if replacing {
+                try await fetchInitialPages(generation: generation, using: client)
+            } else {
+                let page = try await client.search(
+                    jql: jql, maxResults: Self.loadMorePageSize, nextPageToken: nextPageToken
+                )
+                guard generation == self.generation else { return }
+                issues += page.issues
+                nextPageToken = page.nextPageToken
+                hasMore = page.nextPageToken != nil && page.isLast != true
+            }
         } catch {
             guard generation == self.generation else { return }
             if replacing { issues = [] }
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func fetchInitialPages(generation: Int, using client: JiraClient) async throws {
+        var accumulated: [IssueSummary] = []
+        var token: String?
+        var lastIsLast: Bool?
+
+        while accumulated.count < Self.initialPageSize {
+            let remaining = Self.initialPageSize - accumulated.count
+            let maxResults = min(remaining, Self.jiraListFieldsPageCap)
+            let page = try await client.search(jql: jql, maxResults: maxResults, nextPageToken: token)
+            guard generation == self.generation else { return }
+            accumulated += page.issues
+            token = page.nextPageToken
+            lastIsLast = page.isLast
+            if page.issues.isEmpty || token == nil || page.isLast == true { break }
+        }
+
+        issues = accumulated
+        nextPageToken = token
+        hasMore = token != nil && lastIsLast != true
     }
 }
