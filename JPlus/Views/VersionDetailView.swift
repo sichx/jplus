@@ -12,17 +12,37 @@ struct VersionDetailView: View {
     @State private var isLoadingHighlights = false
     @State private var highlightsError: String?
     @AppStorage("versionHideCompleted") private var hideCompleted = false
+    @AppStorage("versionOnlyAppTeam") private var onlyAppTeam = false
+    /// Account ids of the App Team's members, once loaded.
+    @State private var appTeamMemberIDs: Set<String>?
+    @State private var appTeamError: String?
 
     /// Past development, so counted as completed along with Jira's Done
     /// category (Done, Won't Do), though Jira files them under In Progress.
     private static let completedStatusNames = ["Ready for QA", "QA", "Ready for UAT", "UAT"]
+    /// The team in Atlassian Teams whose members' issues "Only show App Team" keeps.
+    private static let appTeamName = "App Team"
 
     private var version: JiraVersion { route.version }
 
-    /// Also filters what's already loaded, so completed issues disappear as
-    /// soon as the toggle flips rather than when the new query returns.
+    /// Also filters what's already loaded, so hidden issues disappear as
+    /// soon as a toggle flips rather than when the new query returns.
     private var shownIssues: [IssueSummary] {
-        hideCompleted ? query.issues.filter { !Self.isCompleted($0.fields.status) } : query.issues
+        var issues = query.issues
+        if hideCompleted {
+            issues = issues.filter { !Self.isCompleted($0.fields.status) }
+        }
+        if onlyAppTeam {
+            if let appTeamMemberIDs {
+                issues = issues.filter { issue in
+                    issue.fields.assignee.map { appTeamMemberIDs.contains($0.accountId) } ?? false
+                }
+            } else if appTeamError != nil {
+                // Without the member list nothing can be shown as the team's.
+                issues = []
+            }
+        }
+        return issues
     }
 
     private static func isCompleted(_ status: JiraIssue.Status) -> Bool {
@@ -62,6 +82,7 @@ struct VersionDetailView: View {
         .task { await run() }
         .task { await loadHighlights() }
         .onChange(of: hideCompleted) { Task { await run() } }
+        .onChange(of: onlyAppTeam) { Task { await run() } }
     }
 
     private var header: some View {
@@ -184,7 +205,7 @@ struct VersionDetailView: View {
             // Not run yet counts as loading: the first query can wait on the site's status list.
             ProgressView("Loading issues…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if query.hasRun && query.issues.isEmpty && !hideCompleted {
+        } else if query.hasRun && query.issues.isEmpty && !hideCompleted && !onlyAppTeam {
             ContentUnavailableView("No Issues", systemImage: "shippingbox",
                                    description: Text("Nothing has this fix version yet."))
         } else {
@@ -194,15 +215,21 @@ struct VersionDetailView: View {
                         .toggleStyle(.checkbox)
                         .fixedSize()
                         .help("Hide issues from Ready for QA onward: QA, Ready for UAT, UAT, and done statuses such as Done and Won't Do")
+                    Toggle("Only show \(Self.appTeamName)", isOn: $onlyAppTeam)
+                        .toggleStyle(.checkbox)
+                        .fixedSize()
+                        .help("Show only issues assigned to a member of \(Self.appTeamName) in Atlassian Teams")
                 }
                 // Blank rather than striped when empty, or the stripes behind the message read as rows.
                 .alternatingRowBackgrounds(shownIssues.isEmpty ? .disabled : .automatic)
-                // An overlay rather than its own branch, so the toggle stays on screen to turn back off.
+                // An overlay rather than its own branch, so the toggles stay on screen to turn back off.
                 .overlay {
-                    if hideCompleted, query.hasRun, !query.isLoading, shownIssues.isEmpty {
-                        ContentUnavailableView("No Open Issues", systemImage: "checkmark.circle",
-                                               description: Text("Completed issues are hidden."))
+                    if onlyAppTeam, let appTeamError {
+                        ContentUnavailableView("Couldn't Load \(Self.appTeamName)", systemImage: "exclamationmark.triangle",
+                                               description: Text(appTeamError))
                             .allowsHitTesting(false)
+                    } else if hideCompleted || onlyAppTeam, query.hasRun, !query.isLoading, shownIssues.isEmpty {
+                        emptyFilteredView.allowsHitTesting(false)
                     }
                 }
                 Divider()
@@ -215,17 +242,47 @@ struct VersionDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private var emptyFilteredView: some View {
+        let outsideTeam = "issues assigned outside \(Self.appTeamName)"
+        if !onlyAppTeam {
+            ContentUnavailableView("No Open Issues", systemImage: "checkmark.circle",
+                                   description: Text("Completed issues are hidden."))
+        } else if hideCompleted {
+            ContentUnavailableView("No Open Issues", systemImage: "checkmark.circle",
+                                   description: Text("Completed issues and \(outsideTeam) are hidden."))
+        } else {
+            ContentUnavailableView("No \(Self.appTeamName) Issues", systemImage: "person.2",
+                                   description: Text("Unassigned issues and \(outsideTeam) are hidden."))
+        }
+    }
+
     private func run() async {
         guard let client = session.client else { return }
         let hiding = hideCompleted
-        let jql = await jql(hidingCompleted: hiding)
-        // Toggled again while the status list loaded; that newer run takes over.
-        guard hiding == hideCompleted else { return }
+        let teamOnly = onlyAppTeam
+        var assignees: Set<String>?
+        if teamOnly {
+            do {
+                assignees = try await session.teamMemberIDs(teamNamed: Self.appTeamName)
+                appTeamError = nil
+            } catch {
+                appTeamError = error.localizedDescription
+            }
+            appTeamMemberIDs = assignees
+        }
+        let jql = await jql(hidingCompleted: hiding, assignees: assignees)
+        // Toggled again while the team or status list loaded; that newer run takes over.
+        guard hiding == hideCompleted, teamOnly == onlyAppTeam else { return }
         await query.run(jql, using: client, keepingResults: true)
     }
 
-    private func jql(hidingCompleted: Bool) async -> String {
+    private func jql(hidingCompleted: Bool, assignees: Set<String>?) async -> String {
         var clauses = ["project = \(route.project.key)", "fixVersion = \(version.id)"]
+        // An empty list isn't valid JQL; an empty team's rows are all hidden once loaded anyway.
+        if let assignees, !assignees.isEmpty {
+            clauses.append("assignee in (\(assignees.sorted().map { "\"\($0)\"" }.joined(separator: ", ")))")
+        }
         if hidingCompleted {
             clauses.append("statusCategory != Done")
             // JQL rejects status names the site doesn't have, so name only those

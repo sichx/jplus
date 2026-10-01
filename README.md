@@ -20,7 +20,7 @@ A native macOS client for Jira Cloud, built with SwiftUI. Besides browsing, it c
 - [x] Edit an issue's title, description, status, priority, assignee and reporter; add comments
 - [x] Comments shown as threads; reply to a comment
 - [x] Settings: clear downloaded and cached data
-- [x] Versions per project with progress, drilling into each version's issues; Hide completed toggle
+- [x] Versions per project with progress, drilling into each version's issues; Hide completed and Only show App Team toggles
 - [x] New Ticket: drop/paste/choose a screenshot, create the issue, attach the image
 - [x] Optional Draft with Claude: summary, description and type proposed from the screenshot
 - [ ] Boards and sprints
@@ -264,6 +264,14 @@ development: Ready for QA, QA, Ready for UAT and UAT. The query gets
 paging only fetches open issues. Only statuses the site has are named
 (checked once per session with `/rest/api/3/status`), since JQL rejects
 unknown status names. The choice is remembered across versions.
+
+Only show App Team, next to it, keeps issues assigned to a member of the
+team named "App Team" in Atlassian Teams; unassigned issues are hidden too.
+Teams aren't in the Jira REST API, so the members come from the GraphQL
+gateway: `tenantContexts` gives the site's organization id, then
+`team.teamSearchV2` finds the team by exact name (the search is fuzzy and
+also returns "App Server Team") with its members. The query gets
+`assignee in ("<accountId>", ...)`. Members are fetched once per session.
 
 ## App icon
 

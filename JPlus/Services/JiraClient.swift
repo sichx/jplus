@@ -376,6 +376,103 @@ struct JiraClient: Sendable {
         return info.cloudId
     }
 
+    /// Account ids of everyone in the Atlassian team called `name`, matched
+    /// exactly but ignoring case. Teams belong to the organization rather than
+    /// to Jira, so they are only in the GraphQL gateway, not in REST.
+    func teamMemberAccountIDs(teamNamed name: String, cloudId: String) async throws -> Set<String> {
+        struct Response: Decodable {
+            let data: DataField?
+            let errors: [Message]?
+            struct DataField: Decodable {
+                let tenantContexts: [TenantContext?]?
+                let team: TeamQuery?
+            }
+            struct TenantContext: Decodable { let orgId: String? }
+            struct TeamQuery: Decodable {
+                let teamSearchV2: Search?
+                let teamV2: Team?
+            }
+            struct Search: Decodable { let nodes: [SearchNode]? }
+            struct SearchNode: Decodable { let team: Team? }
+            struct Team: Decodable {
+                let id: String
+                let displayName: String?
+                let members: Members?
+            }
+            struct Members: Decodable {
+                let pageInfo: PageInfo
+                let nodes: [MemberNode?]?
+            }
+            struct PageInfo: Decodable {
+                let hasNextPage: Bool
+                let endCursor: String?
+            }
+            struct MemberNode: Decodable { let member: Member? }
+            struct Member: Decodable { let accountId: String? }
+            struct Message: Decodable { let message: String }
+
+            func failure(_ fallback: String) -> JiraError {
+                .http(status: 200, message: errors.flatMap { $0.isEmpty ? nil : $0.map(\.message).joined(separator: " ") } ?? fallback)
+            }
+        }
+
+        let orgResponse: Response = try await graphQL(
+            operationName: "JPlusOrg",
+            query: "query JPlusOrg($cloudId: ID!) { tenantContexts(cloudIds: [$cloudId]) { orgId } }",
+            variables: ["cloudId": cloudId]
+        )
+        guard let orgId = orgResponse.data?.tenantContexts?.first??.orgId else {
+            throw orgResponse.failure("Couldn't find this site's organization.")
+        }
+
+        let members = "members(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { member { accountId } } }"
+        // The search is fuzzy: "App Team" also finds "App Server Team".
+        let searchResponse: Response = try await graphQL(
+            operationName: "JPlusTeamSearch",
+            query: """
+            query JPlusTeamSearch($org: ID!, $site: String!, $name: String!, $after: String) {
+              team {
+                teamSearchV2(organizationId: $org, siteId: $site, filter: { query: $name }, first: 50) {
+                  nodes { team { id displayName \(members) } }
+                }
+              }
+            }
+            """,
+            variables: ["org": "ari:cloud:platform::org/\(orgId)", "site": cloudId, "name": name]
+        )
+        guard let teams = searchResponse.data?.team?.teamSearchV2?.nodes else {
+            throw searchResponse.failure("Empty GraphQL response.")
+        }
+        guard let team = teams.compactMap(\.team).first(where: {
+            $0.displayName?.caseInsensitiveCompare(name) == .orderedSame
+        }) else {
+            throw JiraError.http(status: 200, message: "This site has no team named \(name).")
+        }
+
+        var accountIDs = Set<String>()
+        var page = team.members
+        var pages = 0
+        while let current = page {
+            accountIDs.formUnion((current.nodes ?? []).compactMap { $0?.member?.accountId })
+            pages += 1
+            guard current.pageInfo.hasNextPage, let after = current.pageInfo.endCursor, pages < 20 else { break }
+            let next: Response = try await graphQL(
+                operationName: "JPlusTeamMembers",
+                query: """
+                query JPlusTeamMembers($id: ID!, $site: String!, $after: String) {
+                  team { teamV2(id: $id, siteId: $site) { id \(members) } }
+                }
+                """,
+                variables: ["id": team.id, "site": cloudId, "after": after]
+            )
+            guard let more = next.data?.team?.teamV2?.members else {
+                throw next.failure("Empty GraphQL response.")
+            }
+            page = more
+        }
+        return accountIDs
+    }
+
     /// "Version highlights" for a project's versions, keyed by version id.
     /// Covers unreleased, released and archived versions, paging through all.
     /// Pass `search` (a version name) to fetch just the matching versions.

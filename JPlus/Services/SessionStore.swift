@@ -20,6 +20,8 @@ final class SessionStore {
     let accounts: AccountStore
     private var cachedCloudId: String?
     private var cachedStatusNames: Set<String>?
+    /// Keyed by lowercased team name.
+    private var cachedTeamMemberIDs: [String: Set<String>] = [:]
 
     init(accounts: AccountStore = AccountStore(persistence: KeychainAccountPersistence())) {
         self.accounts = accounts
@@ -54,6 +56,21 @@ final class SessionStore {
         let names = Set(try await client.statuses().map { $0.name.lowercased() })
         cachedStatusNames = names
         return names
+    }
+
+    /// Account ids of the members of the Atlassian team called `name` on the
+    /// signed-in site, fetched once per team.
+    func teamMemberIDs(teamNamed name: String) async throws -> Set<String> {
+        let cacheKey = name.lowercased()
+        if let cached = cachedTeamMemberIDs[cacheKey] { return cached }
+        guard let client else { throw JiraError.unauthorized }
+        let cloudId = try await cloudId()
+        let ids = try await client.teamMemberAccountIDs(teamNamed: name, cloudId: cloudId)
+        // Signed out or switched account while this loaded; don't cache it for the new site.
+        if client.credentials.siteURL == self.client?.credentials.siteURL {
+            cachedTeamMemberIDs[cacheKey] = ids
+        }
+        return ids
     }
 
     // MARK: - Launch
@@ -169,6 +186,7 @@ final class SessionStore {
         currentAccountID = nil
         cachedCloudId = nil
         cachedStatusNames = nil
+        cachedTeamMemberIDs = [:]
         accounts.setActive(nil)
         state = .signedOut
     }
@@ -180,6 +198,7 @@ final class SessionStore {
         currentAccountID = account.id
         cachedCloudId = nil
         cachedStatusNames = nil
+        cachedTeamMemberIDs = [:]
         accounts.setActive(account.id)
         notice = nil
         state = .signedIn(user)
