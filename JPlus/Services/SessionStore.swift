@@ -20,6 +20,9 @@ final class SessionStore {
     let accounts: AccountStore
     private var cachedCloudId: String?
     private var cachedStatusNames: Set<String>?
+    private var cachedOrgId: String?
+    /// Nil until looked up; `.some(nil)` once the site is known to have no Team field.
+    private var cachedTeamFieldID: String??
     /// Keyed by lowercased team name.
     private var cachedTeamMemberIDs: [String: Set<String>] = [:]
 
@@ -58,6 +61,25 @@ final class SessionStore {
         return names
     }
 
+    /// The Atlassian organization of the signed-in site, fetched once.
+    func orgId() async throws -> String {
+        if let cachedOrgId { return cachedOrgId }
+        guard let client else { throw JiraError.unauthorized }
+        let id = try await client.orgId(cloudId: try await cloudId())
+        cachedOrgId = id
+        return id
+    }
+
+    /// The id of the signed-in site's Team field, looked up once, or nil if
+    /// the site has none.
+    func teamFieldID() async throws -> String? {
+        if let cachedTeamFieldID { return cachedTeamFieldID }
+        guard let client else { throw JiraError.unauthorized }
+        let id = try await client.teamFieldID()
+        cachedTeamFieldID = .some(id)
+        return id
+    }
+
     /// Account ids of the members of the Atlassian team called `name` on the
     /// signed-in site, fetched once per team.
     func teamMemberIDs(teamNamed name: String) async throws -> Set<String> {
@@ -65,7 +87,8 @@ final class SessionStore {
         if let cached = cachedTeamMemberIDs[cacheKey] { return cached }
         guard let client else { throw JiraError.unauthorized }
         let cloudId = try await cloudId()
-        let ids = try await client.teamMemberAccountIDs(teamNamed: name, cloudId: cloudId)
+        let orgId = try await orgId()
+        let ids = try await client.teamMemberAccountIDs(teamNamed: name, orgId: orgId, cloudId: cloudId)
         // Signed out or switched account while this loaded; don't cache it for the new site.
         if client.credentials.siteURL == self.client?.credentials.siteURL {
             cachedTeamMemberIDs[cacheKey] = ids
@@ -187,6 +210,8 @@ final class SessionStore {
         cachedCloudId = nil
         cachedStatusNames = nil
         cachedTeamMemberIDs = [:]
+        cachedOrgId = nil
+        cachedTeamFieldID = nil
         accounts.setActive(nil)
         state = .signedOut
     }
@@ -199,6 +224,8 @@ final class SessionStore {
         cachedCloudId = nil
         cachedStatusNames = nil
         cachedTeamMemberIDs = [:]
+        cachedOrgId = nil
+        cachedTeamFieldID = nil
         accounts.setActive(account.id)
         notice = nil
         state = .signedIn(user)

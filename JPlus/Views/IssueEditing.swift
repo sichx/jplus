@@ -23,7 +23,7 @@ struct EditableFieldButton<Label: View, Editor: View>: View {
 
     var body: some View {
         Button { isEditing = true } label: {
-            HStack(alignment: .top, spacing: 6) {
+            HStack(spacing: 6) {
                 label
                 Spacer(minLength: 0)
                 Image(systemName: "pencil")
@@ -589,6 +589,173 @@ private struct PersonPicker: View {
             isPresented = false
         } catch {
             saveError = "Couldn't change the \(role.title): \(error.localizedDescription)"
+        }
+        saving = nil
+    }
+}
+
+// MARK: - Team
+
+/// A team's name beside the icon that stands for teams.
+private struct TeamLabel: View {
+    let team: JiraTeam
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "person.2.fill")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 20, height: 20)
+                .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 5))
+            Text(team.name).lineLimit(1)
+        }
+    }
+}
+
+/// The issue's team; click to pick another.
+struct IssueTeamFieldView: View {
+    let issue: JiraIssue
+    let field: IssueTeamField
+    let onChanged: () async -> Void
+
+    @State private var isEditing = false
+
+    var body: some View {
+        EditableFieldButton(help: "Change team", isEditing: $isEditing) {
+            if let team = field.team {
+                TeamLabel(team: team)
+            } else {
+                Text("None").foregroundStyle(.secondary)
+            }
+        } editor: {
+            TeamPicker(issue: issue, field: field, isPresented: $isEditing, onChanged: onChanged)
+        }
+    }
+}
+
+/// Search box and matching teams. Return picks the first match.
+private struct TeamPicker: View {
+    let issue: JiraIssue
+    let field: IssueTeamField
+    @Binding var isPresented: Bool
+    let onChanged: () async -> Void
+
+    private enum Choice: Hashable {
+        case team(String)
+        case clear
+    }
+
+    @Environment(SessionStore.self) private var session
+    @State private var query = ""
+    @State private var results: [JiraTeam]?
+    @State private var searchError: String?
+    @State private var saveError: String?
+    @State private var saving: Choice?
+    @FocusState private var isSearchFocused: Bool
+
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            TextField("Search teams", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .focused($isSearchFocused)
+                .onSubmit {
+                    if let first = results?.first { Task { await choose(.team(first.id)) } }
+                }
+                .padding(10)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    if trimmedQuery.isEmpty, field.team != nil {
+                        PickerRow {
+                            Task { await choose(.clear) }
+                        } content: {
+                            Text("None").foregroundStyle(.secondary)
+                            Spacer(minLength: 4)
+                            if saving == .clear { ProgressView().controlSize(.mini) }
+                        }
+                    }
+                    ForEach(results ?? []) { row($0) }
+                    if results == nil, searchError == nil {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Searching…").foregroundStyle(.secondary)
+                        }
+                        .padding(8)
+                    } else if results?.isEmpty == true, searchError == nil {
+                        Text(trimmedQuery.isEmpty ? "No teams" : "No team matches “\(trimmedQuery)”")
+                            .foregroundStyle(.secondary)
+                            .padding(8)
+                    }
+                    if let searchError { ErrorLabel(message: searchError).padding(8) }
+                }
+                .padding(6)
+            }
+            .frame(height: 300)
+            .disabled(saving != nil)
+            if let saveError {
+                Divider()
+                ErrorLabel(message: saveError).padding(10)
+            }
+        }
+        .frame(width: 300)
+        .onAppear { isSearchFocused = true }
+        .task(id: trimmedQuery) { await search() }
+    }
+
+    private func row(_ team: JiraTeam) -> some View {
+        PickerRow {
+            Task { await choose(.team(team.id)) }
+        } content: {
+            TeamLabel(team: team)
+            Spacer(minLength: 4)
+            if saving == .team(team.id) {
+                ProgressView().controlSize(.mini)
+            } else if team.id == field.team?.id {
+                Image(systemName: "checkmark").foregroundStyle(.tint)
+            }
+        }
+    }
+
+    private func search() async {
+        guard let client = session.client else { return }
+        let text = trimmedQuery
+        // Waits for a pause in typing; a newer query cancels this one.
+        if !text.isEmpty {
+            try? await Task.sleep(for: .milliseconds(250))
+            if Task.isCancelled { return }
+        }
+        do {
+            let cloudId = try await session.cloudId()
+            let orgId = try await session.orgId()
+            let found = try await client.teams(matching: text, orgId: orgId, cloudId: cloudId)
+            if Task.isCancelled { return }
+            // The whole list comes back in no useful order; a search is ranked by match.
+            results = text.isEmpty ? found.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } : found
+            searchError = nil
+        } catch {
+            if Task.isCancelled { return }
+            results = []
+            searchError = "Couldn't search: \(error.localizedDescription)"
+        }
+    }
+
+    private func choose(_ choice: Choice) async {
+        guard let client = session.client, saving == nil else { return }
+        let teamID: String? = if case .team(let id) = choice { id } else { nil }
+        guard teamID != field.team?.id else {
+            isPresented = false
+            return
+        }
+        saving = choice
+        saveError = nil
+        do {
+            try await client.setTeam(id: teamID, fieldID: field.fieldID, onIssue: issue.key)
+            await onChanged()
+            isPresented = false
+        } catch {
+            saveError = "Couldn't change the team: \(error.localizedDescription)"
         }
         saving = nil
     }

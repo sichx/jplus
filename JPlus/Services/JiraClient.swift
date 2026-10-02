@@ -225,6 +225,34 @@ struct JiraClient: Sendable {
         try await put("/rest/api/3/issue/\(key)", json: ["fields": ["priority": ["id": priorityID]]])
     }
 
+    /// The id of the site's Team field, such as "customfield_10001", or nil
+    /// if the site has none. It is a custom field, so the id isn't fixed.
+    func teamFieldID() async throws -> String? {
+        struct Field: Decodable {
+            let id: String
+            let schema: Schema?
+            struct Schema: Decodable { let custom: String? }
+        }
+        let fields: [Field] = try await get("/rest/api/3/field")
+        return fields.first { $0.schema?.custom == "com.atlassian.jira.plugin.system.customfieldtypes:atlassian-team" }?.id
+    }
+
+    /// The team an issue is given to in its Team field, if any.
+    func team(onIssue key: String, fieldID: String) async throws -> JiraTeam? {
+        struct Response: Decodable { let fields: [String: JiraTeam?] }
+        let response: Response = try await get(
+            "/rest/api/3/issue/\(key)",
+            query: [URLQueryItem(name: "fields", value: fieldID)]
+        )
+        return response.fields[fieldID] ?? nil
+    }
+
+    /// Sets an issue's Team field, or clears it when `teamID` is nil.
+    func setTeam(id teamID: String?, fieldID: String, onIssue key: String) async throws {
+        let value: Any = teamID ?? NSNull()
+        try await put("/rest/api/3/issue/\(key)", json: ["fields": [fieldID: value]])
+    }
+
     /// People who can be assigned the issue, matching `query` by name or email.
     func assignableUsers(issueKey: String, query: String) async throws -> [JiraUser] {
         try await get("/rest/api/3/user/assignable/search", query: [
@@ -376,76 +404,33 @@ struct JiraClient: Sendable {
         return info.cloudId
     }
 
-    /// Account ids of everyone in the Atlassian team called `name`, matched
-    /// exactly but ignoring case. Teams belong to the organization rather than
-    /// to Jira, so they are only in the GraphQL gateway, not in REST.
-    func teamMemberAccountIDs(teamNamed name: String, cloudId: String) async throws -> Set<String> {
-        struct Response: Decodable {
-            let data: DataField?
-            let errors: [Message]?
-            struct DataField: Decodable {
-                let tenantContexts: [TenantContext?]?
-                let team: TeamQuery?
-            }
-            struct TenantContext: Decodable { let orgId: String? }
-            struct TeamQuery: Decodable {
-                let teamSearchV2: Search?
-                let teamV2: Team?
-            }
-            struct Search: Decodable { let nodes: [SearchNode]? }
-            struct SearchNode: Decodable { let team: Team? }
-            struct Team: Decodable {
-                let id: String
-                let displayName: String?
-                let members: Members?
-            }
-            struct Members: Decodable {
-                let pageInfo: PageInfo
-                let nodes: [MemberNode?]?
-            }
-            struct PageInfo: Decodable {
-                let hasNextPage: Bool
-                let endCursor: String?
-            }
-            struct MemberNode: Decodable { let member: Member? }
-            struct Member: Decodable { let accountId: String? }
-            struct Message: Decodable { let message: String }
-
-            func failure(_ fallback: String) -> JiraError {
-                .http(status: 200, message: errors.flatMap { $0.isEmpty ? nil : $0.map(\.message).joined(separator: " ") } ?? fallback)
-            }
-        }
-
-        let orgResponse: Response = try await graphQL(
+    /// The Atlassian organization the site belongs to. Teams are the
+    /// organization's rather than Jira's, so team queries need it.
+    func orgId(cloudId: String) async throws -> String {
+        let response: TeamsResponse = try await graphQL(
             operationName: "JPlusOrg",
             query: "query JPlusOrg($cloudId: ID!) { tenantContexts(cloudIds: [$cloudId]) { orgId } }",
             variables: ["cloudId": cloudId]
         )
-        guard let orgId = orgResponse.data?.tenantContexts?.first??.orgId else {
-            throw orgResponse.failure("Couldn't find this site's organization.")
+        guard let orgId = response.data?.tenantContexts?.first??.orgId else {
+            throw response.failure("Couldn't find this site's organization.")
         }
+        return orgId
+    }
 
+    /// Teams whose name matches `query`, or every team for an empty query.
+    /// The match is fuzzy: "App Team" also finds "App Server Team". Teams are
+    /// only in the GraphQL gateway, not in REST.
+    func teams(matching query: String, orgId: String, cloudId: String) async throws -> [JiraTeam] {
+        try await searchTeams(query, selecting: "", orgId: orgId, cloudId: cloudId).map(\.team)
+    }
+
+    /// Account ids of everyone in the team called `name`, matched exactly
+    /// but ignoring case.
+    func teamMemberAccountIDs(teamNamed name: String, orgId: String, cloudId: String) async throws -> Set<String> {
         let members = "members(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { member { accountId } } }"
-        // The search is fuzzy: "App Team" also finds "App Server Team".
-        let searchResponse: Response = try await graphQL(
-            operationName: "JPlusTeamSearch",
-            query: """
-            query JPlusTeamSearch($org: ID!, $site: String!, $name: String!, $after: String) {
-              team {
-                teamSearchV2(organizationId: $org, siteId: $site, filter: { query: $name }, first: 50) {
-                  nodes { team { id displayName \(members) } }
-                }
-              }
-            }
-            """,
-            variables: ["org": "ari:cloud:platform::org/\(orgId)", "site": cloudId, "name": name]
-        )
-        guard let teams = searchResponse.data?.team?.teamSearchV2?.nodes else {
-            throw searchResponse.failure("Empty GraphQL response.")
-        }
-        guard let team = teams.compactMap(\.team).first(where: {
-            $0.displayName?.caseInsensitiveCompare(name) == .orderedSame
-        }) else {
+        let found = try await searchTeams(name, selecting: members, orgId: orgId, cloudId: cloudId)
+        guard let team = found.first(where: { $0.displayName?.caseInsensitiveCompare(name) == .orderedSame }) else {
             throw JiraError.http(status: 200, message: "This site has no team named \(name).")
         }
 
@@ -456,7 +441,7 @@ struct JiraClient: Sendable {
             accountIDs.formUnion((current.nodes ?? []).compactMap { $0?.member?.accountId })
             pages += 1
             guard current.pageInfo.hasNextPage, let after = current.pageInfo.endCursor, pages < 20 else { break }
-            let next: Response = try await graphQL(
+            let next: TeamsResponse = try await graphQL(
                 operationName: "JPlusTeamMembers",
                 query: """
                 query JPlusTeamMembers($id: ID!, $site: String!, $after: String) {
@@ -471,6 +456,27 @@ struct JiraClient: Sendable {
             page = more
         }
         return accountIDs
+    }
+
+    /// Runs the team search, asking for `selection` on each team besides its id and name.
+    private func searchTeams(_ query: String, selecting selection: String, orgId: String, cloudId: String) async throws -> [TeamsResponse.Team] {
+        let response: TeamsResponse = try await graphQL(
+            operationName: "JPlusTeamSearch",
+            query: """
+            query JPlusTeamSearch($org: ID!, $site: String!, $name: String!, $after: String) {
+              team {
+                teamSearchV2(organizationId: $org, siteId: $site, filter: { query: $name }, first: 50, after: $after) {
+                  nodes { team { id displayName \(selection) } }
+                }
+              }
+            }
+            """,
+            variables: ["org": "ari:cloud:platform::org/\(orgId)", "site": cloudId, "name": query]
+        )
+        guard let nodes = response.data?.team?.teamSearchV2?.nodes else {
+            throw response.failure("Empty GraphQL response.")
+        }
+        return nodes.compactMap(\.team)
     }
 
     /// "Version highlights" for a project's versions, keyed by version id.
@@ -729,6 +735,50 @@ struct JiraClient: Sendable {
         let fieldErrors = (body.errors ?? [:]).sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }
         let messages = (body.errorMessages ?? []) + fieldErrors
         return messages.isEmpty ? nil : messages.joined(separator: " ")
+    }
+}
+
+/// Wire shape of the organization and team GraphQL queries.
+private struct TeamsResponse: Decodable {
+    let data: DataField?
+    let errors: [Message]?
+
+    struct DataField: Decodable {
+        let tenantContexts: [TenantContext?]?
+        let team: TeamQuery?
+    }
+    struct TenantContext: Decodable { let orgId: String? }
+    struct TeamQuery: Decodable {
+        let teamSearchV2: Search?
+        let teamV2: Team?
+    }
+    struct Search: Decodable { let nodes: [SearchNode]? }
+    struct SearchNode: Decodable { let team: Team? }
+    struct Team: Decodable {
+        /// An ARI: `ari:cloud:identity::team/<id>`.
+        let id: String
+        let displayName: String?
+        let members: Members?
+
+        /// The form the issue's Team field uses, with the bare id.
+        var team: JiraTeam {
+            JiraTeam(id: id.split(separator: "/").last.map(String.init) ?? id, name: displayName ?? "Unnamed team")
+        }
+    }
+    struct Members: Decodable {
+        let pageInfo: PageInfo
+        let nodes: [MemberNode?]?
+    }
+    struct PageInfo: Decodable {
+        let hasNextPage: Bool
+        let endCursor: String?
+    }
+    struct MemberNode: Decodable { let member: Member? }
+    struct Member: Decodable { let accountId: String? }
+    struct Message: Decodable { let message: String }
+
+    func failure(_ fallback: String) -> JiraError {
+        .http(status: 200, message: errors.flatMap { $0.isEmpty ? nil : $0.map(\.message).joined(separator: " ") } ?? fallback)
     }
 }
 

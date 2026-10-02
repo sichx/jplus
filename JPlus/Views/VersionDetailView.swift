@@ -16,12 +16,22 @@ struct VersionDetailView: View {
     /// Account ids of the App Team's members, once loaded.
     @State private var appTeamMemberIDs: Set<String>?
     @State private var appTeamError: String?
+    /// Height of the header's content, measured so the issues can start right below it.
+    @State private var headerContentHeight: CGFloat = 0
+    /// Header height set by dragging the divider; nil until dragged.
+    @State private var draggedHeaderHeight: CGFloat?
+    /// Header height when the current drag began.
+    @State private var dragStartHeaderHeight: CGFloat?
 
     /// Past development, so counted as completed along with Jira's Done
     /// category (Done, Won't Do), though Jira files them under In Progress.
     private static let completedStatusNames = ["Ready for QA", "QA", "Ready for UAT", "UAT"]
     /// The team in Atlassian Teams whose members' issues "Only show App Team" keeps.
     private static let appTeamName = "App Team"
+    /// Until the divider is dragged, a header taller than this share of the
+    /// page scrolls at that height; a shorter one is shown whole.
+    private static let defaultMaxHeaderFraction: CGFloat = 0.5
+    private static let minIssuesHeight: CGFloat = 160
 
     private var version: JiraVersion { route.version }
 
@@ -50,13 +60,20 @@ struct VersionDetailView: View {
     }
 
     var body: some View {
-        VSplitView {
-            ScrollView {
-                header
+        // Not a VSplitView: it keeps its divider where it first put it, so the
+        // issues wouldn't follow the header as highlights load or change length.
+        GeometryReader { proxy in
+            let headerHeight = headerHeight(in: proxy.size.height)
+            VStack(spacing: 0) {
+                ScrollView {
+                    header
+                        .onGeometryChange(for: CGFloat.self, of: \.size.height) { headerContentHeight = $0 }
+                }
+                .frame(height: headerHeight)
+                headerDivider(headerHeight: headerHeight)
+                issues
+                    .frame(maxHeight: .infinity)
             }
-            .frame(minHeight: 120, idealHeight: 380)
-            issues
-                .frame(minHeight: 160)
         }
         .navigationTitle(version.name)
         .navigationSubtitle(route.project.name)
@@ -83,6 +100,34 @@ struct VersionDetailView: View {
         .task { await loadHighlights() }
         .onChange(of: hideCompleted) { Task { await run() } }
         .onChange(of: onlyAppTeam) { Task { await run() } }
+    }
+
+    /// As tall as the header's content, so the issues start right below its
+    /// last line, but never squeezing the issues or (until dragged) taking
+    /// more than half the page.
+    private func headerHeight(in available: CGFloat) -> CGFloat {
+        let limit = draggedHeaderHeight ?? available * Self.defaultMaxHeaderFraction
+        let wanted = min(limit, headerContentHeight)
+        return max(0, min(wanted, available - Self.minIssuesHeight))
+    }
+
+    /// The line between header and issues. Drag it to show more or less of a
+    /// header that is too long to show whole.
+    private func headerDivider(headerHeight: CGFloat) -> some View {
+        Divider()
+            // A strip tall enough to grab, with the line through its middle.
+            .frame(height: 7)
+            .contentShape(Rectangle())
+            .pointerStyle(.rowResize)
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { drag in
+                        let start = dragStartHeaderHeight ?? headerHeight
+                        dragStartHeaderHeight = start
+                        draggedHeaderHeight = max(60, start + drag.translation.height)
+                    }
+                    .onEnded { _ in dragStartHeaderHeight = nil }
+            )
     }
 
     private var header: some View {

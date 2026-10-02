@@ -19,7 +19,10 @@ struct HomeView: View {
         case issue(String)
     }
 
-    @State private var selection: SidebarItem? = .myIssues
+    /// Nil at launch until the sidebar's versions load; see `chooseStartPage()`.
+    @State private var selection: SidebarItem?
+    /// Set once the launch page is picked, or once something else is chosen first.
+    @State private var hasStartPage = false
     @State private var path = NavigationPath()
 
     @AppStorage("recentIssueKeys") private var recentKeysRaw = ""
@@ -62,9 +65,13 @@ struct HomeView: View {
                     }
             }
         }
-        .onChange(of: selection) { path = NavigationPath() }
+        .onChange(of: selection) {
+            path = NavigationPath()
+            if selection != nil { hasStartPage = true }
+        }
         .task(id: versionsProjectKey.isEmpty ? recentProjectKey : versionsProjectKey) {
             await loadSidebarVersions()
+            chooseStartPage()
         }
         .task {
             // Build or refresh the typo-tolerant search index in the background.
@@ -316,6 +323,9 @@ struct HomeView: View {
         case .issue(let key):
             IssueDetailView(key: key, onOpenIssue: pushIssue)
                 .id(key)
+        case nil where !hasStartPage:
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case nil:
             ContentUnavailableView("Nothing Selected", systemImage: "sidebar.left",
                                    description: Text("Pick something in the sidebar, or press ⌘K to jump to an issue."))
@@ -343,6 +353,15 @@ struct HomeView: View {
         }
     }
 
+    /// Opens on the first version under Versions in the sidebar, or My Issues
+    /// if there are none or they couldn't load. Runs once, and not at all if
+    /// something was picked while the versions loaded.
+    private func chooseStartPage() {
+        guard !hasStartPage else { return }
+        hasStartPage = true
+        selection = sidebarVersions.first.map(SidebarItem.version) ?? .myIssues
+    }
+
     private func openSearch() {
         selection = .search
     }
@@ -350,6 +369,8 @@ struct HomeView: View {
     /// Opens an issue on top of the current view (search results, version).
     private func pushIssue(_ key: String) {
         remember(key)
+        // Opened from ⌘K before the start page was picked; picking it now would clear this.
+        hasStartPage = true
         path.append(key)
     }
 
@@ -390,6 +411,7 @@ struct HomeView: View {
             pushIssue(issue.key)
         case .version(let route):
             remember(nil)
+            hasStartPage = true
             path.append(route)
         }
     }

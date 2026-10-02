@@ -1,6 +1,6 @@
 # JPlus
 
-A native macOS client for Jira Cloud, built with SwiftUI. Besides browsing, it can create a ticket from a screenshot and edit an issue's title, description, status, priority, assignee, reporter and fix versions, and add comments.
+A native macOS client for Jira Cloud, built with SwiftUI. Besides browsing, it can create a ticket from a screenshot and edit an issue's title, description, status, priority, assignee, reporter, team and fix versions, and add comments.
 
 ## Status
 
@@ -17,7 +17,7 @@ A native macOS client for Jira Cloud, built with SwiftUI. Besides browsing, it c
 - [x] Ticket details and attachments in a right-hand column (⌥⌘0 to show or hide)
 - [x] ⇧⌘O opens the current issue, search, list or version in Jira in the browser
 - [x] Change an issue's fix versions from the details column
-- [x] Edit an issue's title, description, status, priority, assignee and reporter; add comments
+- [x] Edit an issue's title, description, status, priority, assignee, reporter and team; add comments
 - [x] Comments shown as threads; reply to a comment
 - [x] Settings: clear downloaded and cached data
 - [x] Versions per project with progress, drilling into each version's issues; Hide completed and Only show App Team toggles
@@ -94,8 +94,9 @@ is sent to Anthropic unless you press that button.
 
 The top row of the sidebar has Search (⌘F) and New Ticket (⌘N) as icons.
 Below are Versions (expandable, with the five lowest unreleased versions of
-your project nested under it), My Issues (open issues assigned to you, the
-default screen), Mentions, and your recent issues. As in ChatGPT's desktop app, the
+your project nested under it), My Issues (open issues assigned to you),
+Mentions, and your recent issues. The app opens on the first version under
+Versions, or on My Issues when there is none. As in ChatGPT's desktop app, the
 signed-in user sits at the bottom of the sidebar: your name and site, with a
 menu for Account, Settings…, opening the site in a browser, and Switch
 Account…. ⌘K jumps to any issue or version.
@@ -223,6 +224,12 @@ its message is shown next to the control.
   `PUT …/issue/{key}/assignee` (Unassigned clears it); reporter candidates come
   from `/rest/api/3/user/search` with app accounts filtered out, saved as
   `fields.reporter` (needs the Modify Reporter permission).
+- **Team**: click it in the details column and search, or pick None to clear
+  it. Team is a custom field whose id differs by site, so it is found once
+  per session in `/rest/api/3/field` (the field of type `atlassian-team`) and
+  read with its own request alongside the issue; a site without the field
+  shows no Team row. The choices come from the GraphQL gateway's
+  `team.teamSearchV2`, and picking one saves the team's id to that field.
 - **Description**: Edit next to the heading. The text is Jira wiki markup,
   read and written through API v2 (`/rest/api/2/issue/{key}`), so Jira does the
   ADF conversion both ways and images, tables, links and mentions survive a
@@ -256,6 +263,11 @@ tokens, recent tickets, search history, project choices and the Claude API
 key are kept. The search index is rebuilt in the background afterwards.
 
 ## Versions
+
+The header (dates, progress, description and Version highlights) is as tall
+as its content, so the issues start right below its last line. A header
+taller than half the page stops there and scrolls; drag the line above the
+issues to show more or less of it, never past its last line.
 
 Hide completed, left of the filter field on a version's issue list, drops
 issues whose status is in Jira's Done category (Done, Won't Do) or past
@@ -301,6 +313,7 @@ JPlus/
     JiraSearch.swift        Search page + lightweight IssueSummary rows
     JiraProject.swift       Project list
     JiraVersion.swift       Versions with issue-status counts
+    JiraTeam.swift          A team from Atlassian Teams, and an issue's Team field
     JiraCreate.swift        Issue types, create/attach responses, plain text -> ADF
     IssueExtras.swift       Linked designs and attachment media ids (GraphQL)
     ADF.swift               Atlassian Document Format tree
@@ -336,7 +349,7 @@ JPlus/
     VersionDetailView.swift One version's header and issues
     IssueListView.swift     Shared issue table + footer
     IssueDetailView.swift   Issue header and parent, description, subtasks, designs, comments; fields and attachments column
-    IssueEditing.swift      Title, status, priority, assignee/reporter and description editors; comment threads, comment and reply boxes
+    IssueEditing.swift      Title, status, priority, assignee/reporter, team and description editors; comment threads, comment and reply boxes
     CommandPaletteView.swift ⌘K overlay: search box, suggestions, preview
     IssueBadges.swift       Status/type/priority badges, person cell, tags
     ADFView.swift           Native ADF renderer, including images and attached files

@@ -21,6 +21,8 @@ struct IssueDetailView: View {
     @State private var children: IssueSearchPage?
     /// The full comment list, which (unlike the issue's embedded comments) marks replies.
     @State private var comments: [JiraIssue.Comment]?
+    /// The Team field; nil until loaded, and on a site without one.
+    @State private var team: IssueTeamField?
     @State private var previewURL: URL?
     @State private var attachmentError: String?
     @AppStorage("showIssueDetailsPane") private var showDetailsPane = true
@@ -48,7 +50,7 @@ struct IssueDetailView: View {
         .inspector(isPresented: $showDetailsPane) {
             Group {
                 if case .loaded(let issue) = phase {
-                    IssueDetailsPane(issue: issue, onOpenIssue: onOpenIssue, onChanged: reloadIssue)
+                    IssueDetailsPane(issue: issue, team: team, onOpenIssue: onOpenIssue, onChanged: reloadIssue)
                 } else {
                     Color.clear
                 }
@@ -120,10 +122,12 @@ struct IssueDetailView: View {
             return
         }
         phase = .loading
-        // Designs and attachment media ids come from the GraphQL gateway, and
-        // child issues from a search: fetched alongside the issue, but never
-        // holding it up or failing it.
+        // Designs and attachment media ids come from the GraphQL gateway, child
+        // issues from a search, and the team from a custom field whose id
+        // differs by site: fetched alongside the issue, but never holding it
+        // up or failing it.
         async let fetchedExtras = loadExtras(using: client)
+        async let fetchedTeam = loadTeam(using: client)
         async let fetchedChildren = loadChildren(using: client)
         async let fetchedComments = try? client.allComments(issueKey: key)
         do {
@@ -137,6 +141,7 @@ struct IssueDetailView: View {
         } catch {
             phase = .failed(error.localizedDescription)
         }
+        if let fetched = await fetchedTeam { team = fetched }
         if let fetched = await fetchedComments { comments = fetched }
         if let fetched = await fetchedChildren { children = fetched }
         if let fetched = await fetchedExtras { extras = fetched }
@@ -146,9 +151,11 @@ struct IssueDetailView: View {
     private func reloadIssue() async {
         guard let client = session.client else { return }
         async let fetchedComments = try? client.allComments(issueKey: key)
+        async let fetchedTeam = loadTeam(using: client)
         guard let issue = try? await client.issue(key: key) else { return }
         // Set together, so a new comment doesn't show flat and then jump into its thread.
         if let fetched = await fetchedComments { comments = fetched }
+        if let fetched = await fetchedTeam { team = fetched }
         phase = .loaded(issue)
         if let id = session.currentAccountID {
             IssueTitleCache.save([issue.key: issue.fields.summary], in: AccountDefaults.store(for: id))
@@ -159,6 +166,15 @@ struct IssueDetailView: View {
     /// Until a search succeeds, the sub-tasks embedded in the issue are listed.
     private func loadChildren(using client: JiraClient) async -> IssueSearchPage? {
         try? await client.childIssues(of: key)
+    }
+
+    /// Nil if the site has no Team field or the request fails, so a refresh
+    /// keeps what's already shown.
+    private func loadTeam(using client: JiraClient) async -> IssueTeamField? {
+        guard let fieldID = try? await session.teamFieldID(),
+              let team = try? await client.team(onIssue: key, fieldID: fieldID)
+        else { return nil }
+        return IssueTeamField(fieldID: fieldID, team: team)
     }
 
     /// Nil if the gateway fails, so a refresh keeps what's already shown.
@@ -265,6 +281,8 @@ private struct IssueContentView: View {
 /// Ticket fields, Cursor prompt actions and attachments, shown in the right-hand column.
 private struct IssueDetailsPane: View {
     let issue: JiraIssue
+    /// Nil until loaded, and on a site without a Team field.
+    let team: IssueTeamField?
     let onOpenIssue: (String) -> Void
     /// Called after an edit is saved, to reload the issue.
     let onChanged: () async -> Void
@@ -305,6 +323,9 @@ private struct IssueDetailsPane: View {
                     field("Updated") {
                         Text(fields.updated, format: .relative(presentation: .named))
                             .help(fields.updated.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    if let team {
+                        field("Team") { IssueTeamFieldView(issue: issue, field: team, onChanged: onChanged) }
                     }
                 }
                 .font(.callout)
