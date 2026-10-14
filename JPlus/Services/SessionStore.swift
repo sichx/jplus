@@ -198,6 +198,7 @@ final class SessionStore {
     }
 
     func deleteAccount(id: UUID) async throws {
+        try await GitHubStore.removeSavedConnection(for: id)
         try await accounts.delete(id: id)
         AccountDefaults.remove(for: id)
         if currentAccountID == id { signOut() }

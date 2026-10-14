@@ -5,6 +5,14 @@ struct SettingsView: View {
         Form {
             TextSizeSection()
             Section {
+                GitHubConnectionEditor()
+            } header: {
+                Text("GitHub · Create Branch")
+            } footer: {
+                Text("The connection is saved for the current Jira account. Tokens are stored in the Keychain.")
+                    .foregroundStyle(.secondary)
+            }
+            Section {
                 ClaudeAPIKeyEditor()
             } header: {
                 Text("Draft with Claude")
