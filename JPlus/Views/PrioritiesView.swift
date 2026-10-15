@@ -230,8 +230,10 @@ struct PrioritiesView: View {
                 }
                 .frame(maxWidth: 820, alignment: .leading)
                 .padding(24)
+                // The scroll view only spans its content's width, so the
+                // content fills the pane to keep the scroller at its edge.
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
             .environment(drafts)
             #if os(iOS)
             // Scrolling closes a row swiped open, as in Mail.
