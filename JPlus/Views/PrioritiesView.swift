@@ -59,6 +59,7 @@ struct PrioritiesView: View {
             .navigationTitle("Daily Priorities")
             .adaptiveInspector(isPresented: Binding(get: { showsDayList && folderID != nil }, set: { showsDayList = $0 })) {
                 PriorityDayList(model: model)
+                    .lockedWhileSaving(model.saving != nil)
                     .inspectorColumnWidth(min: 180, ideal: 220, max: 320)
             }
             .toolbar {
@@ -69,7 +70,7 @@ struct PrioritiesView: View {
                         isPickingNewDay = true
                     }
                     .help("Start a day's priorities")
-                    .disabled(model.folder == nil)
+                    .disabled(model.folder == nil || model.saving != nil)
                     .popover(isPresented: $isPickingNewDay, arrowEdge: .bottom) { newDayPicker }
                     Button(showsDayList ? "Hide Days" : "Show Days", systemImage: usesDayListSheet ? "calendar" : "sidebar.right") {
                         showsDayList.toggle()
@@ -80,11 +81,12 @@ struct PrioritiesView: View {
                 ToolbarItemGroup(placement: .secondaryAction) {
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.reload() } }
                         .keyboardShortcut("r", modifiers: .command)
-                        .disabled(folderID == nil)
+                        .disabled(folderID == nil || model.saving != nil)
                     Button("Choose Folder…", systemImage: "folder.badge.gearshape") {
                         folderDraft = folderInput
                         isChoosingFolder = true
                     }
+                    .disabled(model.saving != nil)
                     .popover(isPresented: $isChoosingFolder, arrowEdge: .bottom) { folderChooser }
                     if let url = folderWebURL {
                         Button("Open in Confluence", systemImage: "safari") { openURL(url) }
@@ -235,6 +237,20 @@ struct PrioritiesView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .environment(drafts)
+            // A change saving locks the days until it's saved, with what's
+            // saving shown at the bottom. A field already being typed in
+            // keeps its focus, so nothing typed is lost.
+            .lockedWhileSaving(model.saving != nil)
+            .overlay(alignment: .bottom) {
+                ZStack {
+                    if let save = model.saving {
+                        PrioritySavingBar(save: save, waiting: model.savesWaiting)
+                            .padding(20)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.15), value: model.saving != nil)
+            }
             #if os(iOS)
             // Scrolling closes a row swiped open, as in Mail.
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, _ in
@@ -533,6 +549,77 @@ private struct PriorityDayList: View {
     }
 }
 
+private extension View {
+    /// While a change saves, washes the view out and lets no click or tap
+    /// through to it.
+    func lockedWhileSaving(_ isLocked: Bool) -> some View {
+        allowsHitTesting(!isLocked)
+            .overlay {
+                ZStack {
+                    if isLocked {
+                        Rectangle()
+                            .fill(.background.opacity(0.55))
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.15), value: isLocked)
+            }
+    }
+}
+
+/// What's saving while the days are locked, on one line: the item as it
+/// will read once saved (its check and text), and how many more changes
+/// are waiting behind it.
+private struct PrioritySavingBar: View {
+    let save: PrioritySave
+    let waiting: Int
+
+    #if os(iOS)
+    private static let openSymbol = "circle"
+    private static let doneSymbol = "largecircle.fill.circle"
+    #else
+    private static let openSymbol = "square"
+    private static let doneSymbol = "checkmark.square.fill"
+    #endif
+
+    private var title: String {
+        switch save.change {
+        case .saving: "Saving"
+        case .adding: "Adding"
+        case .deleting: "Deleting"
+        case .moving: "Moving to Today"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(title)
+                .fontWeight(.semibold)
+                .fixedSize()
+            Image(systemName: save.isDone ? Self.doneSymbol : Self.openSymbol)
+                .foregroundStyle(save.isDone ? Color.accentColor : .secondary)
+            Text(save.text)
+                .lineLimit(1)
+                .strikethrough(save.change == .deleting || (save.isDone && PriorityItemRow.strikesDone))
+                .foregroundStyle(save.change == .deleting || save.isDone ? .secondary : .primary)
+            if waiting > 0 {
+                Text("+\(waiting) more")
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
+        }
+        .scaledFont(.callout)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.quaternary))
+        .shadow(color: .black.opacity(0.15), radius: 10, y: 3)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// Where a comment is being typed under an item: a new thread on it, or a
 /// reply in one of its threads.
 private enum CommentSpot: Hashable {
@@ -793,7 +880,7 @@ private struct PriorityItemRow: View {
     static let checkWidth: CGFloat = 26
     static let lineSpacing: CGFloat = 12
     /// Reminders greys finished items without striking them through.
-    private static let strikesDone = false
+    static let strikesDone = false
 
     /// Reminders' round check: an empty ring, filled when done.
     private var check: some View {
@@ -817,7 +904,7 @@ private struct PriorityItemRow: View {
     /// and comments line up with.
     static let checkWidth: CGFloat = 16
     static let lineSpacing: CGFloat = 8
-    private static let strikesDone = true
+    static let strikesDone = true
 
     private var check: some View {
         Toggle("", isOn: Binding(

@@ -29,6 +29,9 @@ final class PrioritiesModel {
     private(set) var errorMessage: String?
     /// Ids of items with a save in flight.
     private(set) var busyItemIDs: Set<String> = []
+    /// Changes waiting to save, oldest first, each by the id of its write
+    /// (or of the move it's part of). The screen is locked while any are.
+    private var saveQueue: [(id: UUID, save: PrioritySave)] = []
     /// True while a new day's page is being created.
     private(set) var isCreatingDay = false
 
@@ -37,7 +40,8 @@ final class PrioritiesModel {
     /// Month folder titles → ids, from the last load.
     private var monthFolderIDs: [String: String] = [:]
     /// Writes run one after another, so edits to the same page don't race.
-    private var lastWrite: Task<Void, Never>?
+    /// Each ends with whether it saved.
+    private var lastWrite: Task<Bool, Never>?
     /// Edits not yet saved, oldest first. A save that finishes shows its page
     /// with these still applied, so an edit made since doesn't blink away.
     @ObservationIgnored private var pendingEdits: [(id: UUID, pageID: String, transform: (ADFNode) -> ADFNode)] = []
@@ -51,6 +55,11 @@ final class PrioritiesModel {
     var todayRef: PriorityDayRef? { ref(titled: todayTitle) }
     var selectedID: String? { shownIDs.first }
     var shownDays: [PriorityDay] { shownIDs.compactMap { pages[$0] } }
+
+    /// The change saving now, while one is.
+    var saving: PrioritySave? { saveQueue.first?.save }
+    /// How many more changes are waiting behind it.
+    var savesWaiting: Int { max(0, saveQueue.count - 1) }
 
     func ref(titled title: String) -> PriorityDayRef? { index.first { $0.title == title } }
     func ref(for date: Date) -> PriorityDayRef? { ref(titled: PriorityNaming.dayTitle(for: date)) }
@@ -237,7 +246,7 @@ final class PrioritiesModel {
     func comment(_ text: String, on item: PriorityItem, in day: PriorityDay) async throws {
         guard let client, let document = commentDocument(text) else { return }
         // After the edits waiting to save, so the page has the text as shown.
-        await lastWrite?.value
+        _ = await lastWrite?.value
         let page = try await client.confluencePage(id: day.pageID)
         guard let anchor = page.document.commentAnchor(forItem: item.id) else {
             throw CommentError.noText
@@ -343,7 +352,8 @@ final class PrioritiesModel {
     // MARK: - Edits
 
     func setDone(_ done: Bool, item: PriorityItem, in day: PriorityDay) {
-        write(page: day.pageID, itemID: item.id, message: done ? "Done: \(item.plainText.prefix(60))" : "Reopened: \(item.plainText.prefix(60))") { document in
+        write(page: day.pageID, itemID: item.id, message: done ? "Done: \(item.plainText.prefix(60))" : "Reopened: \(item.plainText.prefix(60))",
+              showing: PrioritySave(change: .saving, text: item.plainText, isDone: done)) { document in
             document.replacingTaskItems { current, node in
                 current.id == item.id ? node.settingTaskState(done: done) : node
             }
@@ -354,7 +364,8 @@ final class PrioritiesModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return remove(item, from: day) }
         let content = ADFNode.inlineContent(from: trimmed, siteURL: siteURL)
-        write(page: day.pageID, itemID: item.id, message: "Edited: \(trimmed.prefix(60))") { document in
+        write(page: day.pageID, itemID: item.id, message: "Edited: \(trimmed.prefix(60))",
+              showing: PrioritySave(change: .saving, text: trimmed, isDone: item.isDone)) { document in
             document.replacingTaskItems { current, node in
                 current.id == item.id ? ADFNode(type: node.type, attrs: node.attrs, content: content) : node
             }
@@ -362,7 +373,12 @@ final class PrioritiesModel {
     }
 
     func remove(_ item: PriorityItem, from day: PriorityDay) {
-        write(page: day.pageID, itemID: item.id, message: "Removed: \(item.plainText.prefix(60))") { document in
+        remove(item, from: day, showing: PrioritySave(change: .deleting, text: item.plainText, isDone: item.isDone))
+    }
+
+    @discardableResult
+    private func remove(_ item: PriorityItem, from day: PriorityDay, showing save: PrioritySave?) -> Task<Bool, Never>? {
+        write(page: day.pageID, itemID: item.id, message: "Removed: \(item.plainText.prefix(60))", showing: save) { document in
             document.replacingTaskItems { current, node in current.id == item.id ? nil : node }
         }
     }
@@ -376,7 +392,8 @@ final class PrioritiesModel {
         guard !trimmed.isEmpty else { return nil }
         let id = UUID().uuidString.lowercased()
         let item = ADFNode.taskItem(ADFNode.inlineContent(from: trimmed, siteURL: siteURL), id: id)
-        write(page: day.pageID, itemID: id, message: "Added: \(trimmed.prefix(60))") { document in
+        write(page: day.pageID, itemID: id, message: "Added: \(trimmed.prefix(60))",
+              showing: PrioritySave(change: .adding, text: trimmed, isDone: false)) { document in
             itemID.flatMap { document.insertingTaskItem(item, after: $0) } ?? document.appendingTaskItem([item])
         }
         return id
@@ -386,29 +403,39 @@ final class PrioritiesModel {
     /// one. Not one with comments, which can't move with it.
     func moveToToday(_ item: PriorityItem, from day: PriorityDay) async {
         guard let today = todayRef, today.pageID != day.pageID, !hasComments(item, in: day) else { return }
+        // One change on screen across both pages' saves, so the screen stays
+        // locked in between.
+        let moveID = UUID()
+        saveQueue.append((moveID, PrioritySave(change: .moving, text: item.plainText, isDone: item.isDone)))
+        defer { saveQueue.removeAll { $0.id == moveID } }
         let moved = ADFNode.taskItem(item.contentWithoutComments, done: item.isDone, id: item.id)
-        write(page: today.pageID, itemID: item.id, message: "Moved from \(day.title): \(item.plainText.prefix(50))") { $0.appendingTaskItem([moved]) }
-        await lastWrite?.value
-        guard errorMessage == nil else { return }
-        remove(item, from: day)
+        let added = write(page: today.pageID, itemID: item.id, message: "Moved from \(day.title): \(item.plainText.prefix(50))", showing: nil) { $0.appendingTaskItem([moved]) }
+        // Only off its own day once it's on today's, so a failed save can't lose it.
+        guard await added?.value == true else { return }
+        _ = await remove(item, from: day, showing: nil)?.value
     }
 
     /// Shows a change to a page at once and queues it: fetch, transform, save;
     /// again on a version conflict. The loaded copy is then replaced by what
-    /// was saved, with any later edits still waiting on top.
-    private func write(page pageID: String, itemID: String?, message: String, transform: @escaping (ADFNode) -> ADFNode) {
-        guard let client else { return }
+    /// was saved, with any later edits still waiting on top. `save` is how
+    /// the screen shows it until then; nil when the caller shows it. The
+    /// write ends with whether it saved.
+    @discardableResult
+    private func write(page pageID: String, itemID: String?, message: String, showing save: PrioritySave?, transform: @escaping (ADFNode) -> ADFNode) -> Task<Bool, Never>? {
+        guard let client else { return nil }
         if let itemID { busyItemIDs.insert(itemID) }
         let editID = UUID()
         pendingEdits.append((editID, pageID, transform))
+        if let save { saveQueue.append((editID, save)) }
         if let document = pages[pageID]?.document { pages[pageID]?.document = transform(document) }
         let previous = lastWrite
-        lastWrite = Task { [weak self] in
-            await previous?.value
-            guard let self else { return }
+        let task = Task { [weak self] () -> Bool in
+            _ = await previous?.value
+            guard let self else { return false }
             defer {
                 if let itemID { busyItemIDs.remove(itemID) }
                 pendingEdits.removeAll { $0.id == editID }
+                saveQueue.removeAll { $0.id == editID }
             }
             var attempts = 0
             while true {
@@ -422,16 +449,19 @@ final class PrioritiesModel {
                         .filter { $0.pageID == pageID && $0.id != editID }
                         .reduce(document) { $1.transform($0) }
                     errorMessage = nil
-                    return
+                    return true
                 } catch let error as JiraError where error.isConflict && attempts < 3 {
                     continue
                 } catch {
-                    errorMessage = "Couldn't save to Confluence: \(error.localizedDescription)"
+                    // After the reload, which clears the message as it starts.
                     await reload()
-                    return
+                    errorMessage = "Couldn't save to Confluence: \(error.localizedDescription)"
+                    return false
                 }
             }
         }
+        lastWrite = task
+        return task
     }
 }
 

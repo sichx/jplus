@@ -21,6 +21,18 @@ nonisolated struct PriorityItem: Identifiable, Hashable, Sendable {
     var canBeCommentedOn: Bool { ADFNode.taskItem(content, id: id).commentAnchor(forItem: id) != nil }
 }
 
+/// A change to a priority while it saves, as the screen shows it then: the
+/// item as it will read once saved, or as it read for one being deleted.
+nonisolated struct PrioritySave: Hashable, Sendable {
+    enum Change: Hashable, Sendable {
+        case saving, adding, deleting, moving
+    }
+
+    let change: Change
+    let text: String
+    let isDone: Bool
+}
+
 /// The text a new inline comment highlights. Confluence finds it by
 /// matching: it's the `index`th (from 0) of `count` copies on the page.
 nonisolated struct PriorityCommentAnchor: Hashable, Sendable {
