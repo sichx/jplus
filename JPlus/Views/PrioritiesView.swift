@@ -282,7 +282,7 @@ struct PrioritiesView: View {
                             day: day,
                             threads: model.threads(on: item, in: day),
                             hasComments: hasComments,
-                            canMoveToToday: !hasComments && (model.todayRef.map { $0.pageID != day.pageID } ?? false),
+                            canMoveToToday: model.todayRef.map { $0.pageID != day.pageID } ?? false,
                             isBusy: model.busyItemIDs.contains(item.id),
                             model: model,
                             swipedOpenID: $swipedOpenID,
@@ -569,7 +569,7 @@ private struct PriorityItemRow: View {
     let threads: [PriorityCommentThread]
     /// It has open comments (or may, until they load), so it isn't edited.
     let hasComments: Bool
-    /// Today has a page, this item is on another day, and it has no comments.
+    /// Today has a page and this item is on another day.
     let canMoveToToday: Bool
     let isBusy: Bool
     let model: PrioritiesModel
@@ -694,6 +694,9 @@ private struct PriorityItemRow: View {
         Button("Edit", systemImage: "pencil", action: beginEdit)
             .disabled(hasComments || composing == .newThread)
         addCommentButton
+        if canMoveToToday {
+            moveToTodayButton
+        }
         Button("Delete", systemImage: "trash", role: .destructive) {
             model.remove(item, from: day)
         }
@@ -705,9 +708,7 @@ private struct PriorityItemRow: View {
             model.setDone(!item.isDone, item: item, in: day)
         }
         if canMoveToToday {
-            Button("Move to Today", systemImage: "arrow.uturn.forward") {
-                Task { await model.moveToToday(item, from: day) }
-            }
+            moveToTodayButton
         }
         Button("Copy Text", systemImage: "doc.on.doc") {
             Clipboard.copy(item.plainText)
@@ -722,6 +723,15 @@ private struct PriorityItemRow: View {
     private var addCommentButton: some View {
         Button("Add Comment…", systemImage: "plus.bubble", action: beginComment)
             .disabled(!item.canBeCommentedOn)
+    }
+
+    /// Not for an item with comments, which stay on its page, nor one still
+    /// saving, which may be partway through a move already.
+    private var moveToTodayButton: some View {
+        Button("Move to Today", systemImage: "arrow.uturn.forward") {
+            Task { await model.moveToToday(item, from: day) }
+        }
+        .disabled(hasComments || isBusy)
     }
 
     /// The item's text, or the field editing it.

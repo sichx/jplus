@@ -160,8 +160,10 @@ that already has a page can't be created again; the picker says so and
 offers to open it. It can also copy the unfinished items from the most
 recent earlier day.
 
-Tick a box to finish an item, double-click (or Edit…) to change its text,
-right-click for Mark Done, Move to Today, Copy Text and Delete. Type in
+Tick a box to finish an item, click its text to change it, right-click for
+Edit, Add Comment…, Move to Today and Delete. Move to Today, on an item
+from another day once today has a page, adds it to the end of today's list
+and then takes it off the day it was on. Type in
 "Add a priority…" under the top day and press Return to add. Typed issue
 keys become issue cards and typed web addresses become links; issue cards
 for this site open in the app.
