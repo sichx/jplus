@@ -15,6 +15,7 @@ A native macOS client for Jira Cloud, built with SwiftUI. Besides browsing, it c
 - [x] Linked Figma designs on the issue detail, with Open in Figma and Dev Mode
 - [x] Google-style search: plain words, typo-tolerant, ranked results with snippets and "Did you mean"; JQL kept as Advanced search
 - [x] Ticket details and attachments in a right-hand column (⌥⌘0 to show or hide)
+- [x] Create a GitHub branch from an issue, with a prefix, searchable base branches and an editable name generated from the issue key and title
 - [x] ⇧⌘O opens the current issue, search, list or version in Jira in the browser
 - [x] Change an issue's fix versions from the details column
 - [x] Edit an issue's title, description, status, priority, assignee, reporter and team; add comments
@@ -264,6 +265,28 @@ saves as soon as it's clicked with `PUT /rest/api/3/issue/{key}` and an
 edits made elsewhere are kept. If Jira refuses, the box flips back and Jira's
 message is shown. Versions come from `/rest/api/3/project/{key}/versions`,
 loaded when the popover first opens.
+
+## Creating a GitHub branch
+
+Open Issue details > Actions > Create Branch… and choose a repository, prefix
+and base branch. The editable name comes from the issue key and title, for example
+`bugfix/VPE-1232-add-article-to-homepage`, and the full name is limited to 60 characters.
+Prefixes include `feature/`, `bugfix/`, `hotfix/`, `chore/` and `refactor/`;
+`other` adds no prefix, so you can enter your own in Name. Bugs default to
+`bugfix/`; other issue types default to `feature/`.
+
+Connect in Settings > GitHub · Create Branch, or directly in the form, using a
+fine-grained personal access token with **Contents: Read and write** for your
+repositories. Complete organization approval if required. Connections are stored
+in the Keychain separately for each Jira account.
+
+The form remembers your repository. The base defaults to a release branch matching
+the issue's Fix versions when exactly one matches, then the last used base, then
+the repository's default branch. You can change it before creating.
+
+Creation adds a remote branch without overwriting existing branches. Success
+provides a checkout command and a link to GitHub. No local checkout or Jira update
+is performed.
 
 ## Editing an issue
 
