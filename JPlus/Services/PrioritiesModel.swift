@@ -34,9 +34,14 @@ final class PrioritiesModel {
     private var saveQueue: [(id: UUID, save: PrioritySave)] = []
     /// True while a new day's page is being created.
     private(set) var isCreatingDay = false
+    /// Ids of day pages being deleted.
+    private(set) var deletingPageIDs: Set<String> = []
 
     private var client: JiraClient?
     private var folderID = ""
+    /// Set when the model shows one page on its own (Product Questions)
+    /// rather than the days under a folder.
+    private var singlePageID: String?
     /// Month folder titles → ids, from the last load.
     private var monthFolderIDs: [String: String] = [:]
     /// Writes run one after another, so edits to the same page don't race.
@@ -98,6 +103,7 @@ final class PrioritiesModel {
     func load(client: JiraClient, folderID: String) async {
         self.client = client
         self.folderID = folderID
+        singlePageID = nil
         generation += 1
         let myGeneration = generation
         isLoading = true
@@ -132,13 +138,10 @@ final class PrioritiesModel {
                 .sorted { $0.title > $1.title }
 
             // Keep what was on screen if it still exists; otherwise open the
-            // last few days, starting from today or the latest day.
+            // last few days.
             let known = Set(index.map(\.pageID))
             shownIDs = shownIDs.filter(known.contains)
-            if shownIDs.isEmpty, let first = todayRef ?? index.first,
-               let start = index.firstIndex(where: { $0.pageID == first.pageID }) {
-                shownIDs = index[start...].prefix(initialDayCount).map(\.pageID)
-            }
+            if shownIDs.isEmpty { shownIDs = openingDayIDs }
             pages = pages.filter { known.contains($0.key) }
             commentThreads = commentThreads.filter { known.contains($0.key) }
             await withTaskGroup(of: Void.self) { group in
@@ -152,9 +155,49 @@ final class PrioritiesModel {
         }
     }
 
+    /// Shows one checklist page on its own, edited as a day is. It has no
+    /// day, so it's never today's and has none before it.
+    func load(client: JiraClient, pageID: String) async {
+        self.client = client
+        singlePageID = pageID
+        generation += 1
+        let myGeneration = generation
+        isLoading = true
+        errorMessage = nil
+        var cancelled = false
+        defer { if myGeneration == generation { isLoading = false; if !cancelled { hasLoaded = true } } }
+        do {
+            let page = try await client.confluencePage(id: pageID)
+            guard myGeneration == generation else { return }
+            let ref = PriorityDayRef(pageID: page.id, title: page.title, day: .distantPast, monthFolderID: "")
+            index = [ref]
+            shownIDs = [page.id]
+            pages = [page.id: PriorityDay(page: page, day: ref.day, siteURL: client.credentials.siteURL)]
+            commentThreads = commentThreads.filter { $0.key == page.id }
+            await loadComments(page.id)
+        } catch where error.isCancellation {
+            cancelled = true
+        } catch {
+            guard myGeneration == generation else { return }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// The days the main pane opens with: the last few, starting from today
+    /// or the latest day.
+    private var openingDayIDs: [String] {
+        guard let first = todayRef ?? index.first,
+              let start = index.firstIndex(where: { $0.pageID == first.pageID }) else { return [] }
+        return index[start...].prefix(initialDayCount).map(\.pageID)
+    }
+
     func reload() async {
         guard let client else { return }
-        await load(client: client, folderID: folderID)
+        if let singlePageID {
+            await load(client: client, pageID: singlePageID)
+        } else {
+            await load(client: client, folderID: folderID)
+        }
     }
 
     /// Shows one day on its own, as picked from the day list.
@@ -347,6 +390,53 @@ final class PrioritiesModel {
         index.removeAll { $0.title == ref.title }
         index.append(ref)
         index.sort { $0.title > $1.title }
+    }
+
+    // MARK: - Deleting a day
+
+    /// A day's page as it is now in Confluence, so deleting it can warn about
+    /// what's on it, including anything added since it loaded. Nil, with the
+    /// error shown, when it couldn't be read.
+    func currentPage(of ref: PriorityDayRef) async -> PriorityDay? {
+        guard let client else { return nil }
+        do {
+            let page = try await client.confluencePage(id: ref.pageID)
+            return PriorityDay(page: page, day: ref.day, siteURL: client.credentials.siteURL)
+        } catch {
+            errorMessage = "Couldn't read \(ref.title): \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Deletes a day's page, which Confluence moves to the space's trash, and
+    /// takes it off the screen. Its month folder stays, even when left empty.
+    func deleteDay(_ ref: PriorityDayRef) async {
+        guard let client else { return }
+        deletingPageIDs.insert(ref.pageID)
+        defer { deletingPageIDs.remove(ref.pageID) }
+        // After any edit still saving, which would otherwise land on a trashed page.
+        _ = await lastWrite?.value
+        do {
+            try await client.deleteConfluencePage(id: ref.pageID)
+        } catch JiraError.forbidden, JiraError.notFound {
+            // Confluence answers 404 too, to someone it won't let delete the page.
+            errorMessage = "Confluence didn't let you delete \(ref.title). Your account may not be allowed to delete pages in this space."
+            return
+        } catch {
+            errorMessage = "Couldn't delete \(ref.title): \(error.localizedDescription)"
+            return
+        }
+        errorMessage = nil
+        index.removeAll { $0.pageID == ref.pageID }
+        pages[ref.pageID] = nil
+        commentThreads[ref.pageID] = nil
+        shownIDs.removeAll { $0 == ref.pageID }
+        if shownIDs.isEmpty {
+            shownIDs = openingDayIDs
+            await withTaskGroup(of: Void.self) { group in
+                for id in shownIDs where pages[id] == nil { group.addTask { await self.loadDay(id) } }
+            }
+        }
     }
 
     // MARK: - Edits

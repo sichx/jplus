@@ -4,7 +4,7 @@ import Foundation
 /// sidebar item, plus the issues and versions opened on top of it.
 struct SavedPlace: Codable, Equatable {
     enum Screen: Codable, Equatable {
-        case myIssues, mentions, account, search, versions, newTicket, priorities
+        case myIssues, mentions, account, search, versions, newTicket, priorities, productQuestions
         case issue(String)
         /// Saved by id and looked up again on launch, so its counts are current.
         case version(projectKey: String, versionID: String)

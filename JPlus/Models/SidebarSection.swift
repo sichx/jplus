@@ -2,7 +2,7 @@ import Foundation
 
 /// Sidebar rows that View > Show in Sidebar can hide.
 enum SidebarSection: String, CaseIterable, Identifiable {
-    case versions, myIssues, mentions, priorities, spaces, recentIssues
+    case versions, myIssues, mentions, priorities, productQuestions, spaces, recentIssues
 
     var id: Self { self }
 
@@ -12,6 +12,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .myIssues: "My Issues"
         case .mentions: "Mentions"
         case .priorities: "Daily Priorities"
+        case .productQuestions: "Product Questions"
         case .spaces: "Spaces"
         case .recentIssues: "Recent Issues"
         }

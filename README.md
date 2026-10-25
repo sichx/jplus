@@ -158,7 +158,12 @@ picks a date, today by default, and creates that day's page inside its
 month folder, making the folder when it's the month's first day. A date
 that already has a page can't be created again; the picker says so and
 offers to open it. It can also copy the unfinished items from the most
-recent earlier day.
+recent earlier day. Right-click a day in that list for Delete Page: the page
+is read again first, and one with anything on it (priorities or other
+content) asks before it goes; a blank one goes straight away. Confluence
+moves it to the space's trash, and its month folder stays. Deleting needs
+the space's delete permission, which not every account has; without it
+Confluence refuses with a 403 or 404 and the day stays.
 
 Tick a box to finish an item, click its text to change it, right-click for
 Edit, Add Comment…, Move to Today and Delete. Move to Today, on an item
@@ -175,6 +180,15 @@ overwrite each other. Items are tracked by the task's `localId`, which
 Confluence keeps across edits made in the browser. The Confluence v2 API
 (`/wiki/api/v2`) takes the same email + API token as Jira; the page body
 goes over as `atlas_doc_format`, the same ADF the app already renders.
+
+### Product Questions
+
+Nested under Daily Priorities in the sidebar: one Confluence page whose task
+list is edited just like a day's (tick, edit, add, delete, comment). The
+first time it opens it searches the site for a page titled "Product
+Questions" and uses it when there's exactly one; otherwise it asks for the
+page's link. Toolbar > Choose Page… changes it later; the link is kept per
+account. View > Show in Sidebar can hide it on its own.
 
 ## Search
 

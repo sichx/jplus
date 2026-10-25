@@ -193,73 +193,39 @@ struct PrioritiesView: View {
     // MARK: - Days
 
     private var days: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                // Lazy, so only the days on screen or near it are built and
-                // laid out. A day far off screen is let go and built afresh
-                // when it comes back, which is why what's being typed in one
-                // lives in `drafts`.
-                LazyVStack(alignment: .leading, spacing: 28) {
-                    if let message = model.errorMessage {
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .scaledFont(.callout)
-                            .foregroundStyle(.orange)
-                            .textSelection(.enabled)
-                    }
-                    if model.todayRef == nil {
-                        HStack(spacing: 8) {
-                            Image(systemName: "sun.max").foregroundStyle(.secondary)
-                            Text("There's no page for today yet.").foregroundStyle(.secondary)
-                            Button("Start Today") {
-                                Task { await model.createDay(Date()) }
-                            }
-                            .disabled(model.isCreatingDay)
-                        }
-                        .scaledFont(.callout)
-                    }
-                    ForEach(model.shownDays) { day in
-                        daySection(day, isSelected: day.pageID == model.selectedID)
-                    }
-                    if let loading = model.shownIDs.first(where: model.loadingPageIDs.contains),
-                       let ref = model.index.first(where: { $0.pageID == loading }) {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text("Loading \(ref.title)…").foregroundStyle(.secondary)
-                        }
-                        .scaledFont(.callout)
-                    }
-                    previousDayButton
+        PriorityPane(model: model, drafts: drafts, swipedOpenID: $swipedOpenID) {
+            // Lazy, so only the days on screen or near it are built and
+            // laid out. A day far off screen is let go and built afresh
+            // when it comes back, which is why what's being typed in one
+            // lives in `drafts`.
+            LazyVStack(alignment: .leading, spacing: 28) {
+                if let message = model.errorMessage {
+                    PriorityErrorLabel(message: message)
                 }
-                .frame(maxWidth: 820, alignment: .leading)
-                .padding(24)
-                // The scroll view only spans its content's width, so the
-                // content fills the pane to keep the scroller at its edge.
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .environment(drafts)
-            // A change saving locks the days until it's saved, with what's
-            // saving shown at the bottom. A field already being typed in
-            // keeps its focus, so nothing typed is lost.
-            .lockedWhileSaving(model.saving != nil)
-            .overlay(alignment: .bottom) {
-                ZStack {
-                    if let save = model.saving {
-                        PrioritySavingBar(save: save, waiting: model.savesWaiting)
-                            .padding(20)
-                            .transition(.opacity)
+                if model.todayRef == nil {
+                    HStack(spacing: 8) {
+                        Image(systemName: "sun.max").foregroundStyle(.secondary)
+                        Text("There's no page for today yet.").foregroundStyle(.secondary)
+                        Button("Start Today") {
+                            Task { await model.createDay(Date()) }
+                        }
+                        .disabled(model.isCreatingDay)
                     }
+                    .scaledFont(.callout)
                 }
-                .animation(.easeOut(duration: 0.15), value: model.saving != nil)
+                ForEach(model.shownDays) { day in
+                    daySection(day, isSelected: day.pageID == model.selectedID)
+                }
+                if let loading = model.shownIDs.first(where: model.loadingPageIDs.contains),
+                   let ref = model.index.first(where: { $0.pageID == loading }) {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading \(ref.title)…").foregroundStyle(.secondary)
+                    }
+                    .scaledFont(.callout)
+                }
+                previousDayButton
             }
-            #if os(iOS)
-            // Scrolling closes a row swiped open, as in Mail.
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, _ in
-                if swipedOpenID != nil { swipedOpenID = nil }
-            }
-            .environment(\.revealInPriorities) { id in
-                withAnimation { proxy.scrollTo(id, anchor: .bottom) }
-            }
-            #endif
         }
     }
 
@@ -284,52 +250,13 @@ struct PrioritiesView: View {
     private func daySection(_ day: PriorityDay, isSelected: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             dayHeader(day)
-            if day.items.isEmpty {
-                Text(isSelected ? "Nothing listed yet." : "No priorities were listed.")
-                    .scaledFont(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: Self.rowSpacing) {
-                    ForEach(day.items) { item in
-                        let spot = NewItemSpot(pageID: day.pageID, afterID: item.id)
-                        let hasComments = model.hasComments(item, in: day)
-                        PriorityItemRow(
-                            item: item,
-                            day: day,
-                            threads: model.threads(on: item, in: day),
-                            hasComments: hasComments,
-                            canMoveToToday: model.todayRef.map { $0.pageID != day.pageID } ?? false,
-                            isBusy: model.busyItemIDs.contains(item.id),
-                            model: model,
-                            swipedOpenID: $swipedOpenID,
-                            onReturn: { newItemSpot = spot }
-                        )
-                        if newItemSpot == spot {
-                            NewPriorityRow { text in
-                                // The next one starts under the one just added.
-                                newItemSpot = model.add(text, to: day, after: item.id)
-                                    .map { NewItemSpot(pageID: day.pageID, afterID: $0) }
-                            } onEnd: { text in
-                                #if os(iOS)
-                                // On iOS, as in Reminders there, leaving it keeps what was typed.
-                                model.add(text, to: day, after: item.id)
-                                #endif
-                                if newItemSpot == spot { newItemSpot = nil }
-                            }
-                        }
-                    }
-                }
-            }
-            if isSelected {
-                AddPriorityField(day: day, model: model)
-            }
+            PriorityItemList(day: day, model: model,
+                             emptyText: isSelected ? "Nothing listed yet." : "No priorities were listed.",
+                             canAdd: isSelected, newItemSpot: $newItemSpot, swipedOpenID: $swipedOpenID)
         }
     }
 
     #if os(iOS)
-    /// Rows carry their own padding and separator, as in Reminders.
-    private static let rowSpacing: CGFloat = 0
-
     /// Reminders' section header: the day in bold (Today in the accent
     /// color), its date beneath, the count and a menu on the right.
     private func dayHeader(_ day: PriorityDay) -> some View {
@@ -372,8 +299,6 @@ struct PrioritiesView: View {
         return named ? longDate(day) : day.formatted(.dateTime.month(.wide).day().year())
     }
     #else
-    private static let rowSpacing: CGFloat = 6
-
     private func dayHeader(_ day: PriorityDay) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(dayLabel(day.day))
@@ -491,18 +416,155 @@ struct PrioritiesView: View {
     }
 }
 
-private struct NewItemSpot: Equatable {
+/// Where a new priority is being typed: under the item Return was pressed in.
+struct NewItemSpot: Equatable {
     let pageID: String
     let afterID: String
 }
 
+/// The scrolling pane priorities show in, up to a readable width. A change
+/// saving locks it until it's saved, with what's saving shown at the
+/// bottom; a field already being typed in keeps its focus, so nothing typed
+/// is lost. Daily Priorities and Product Questions both show in one.
+struct PriorityPane<Content: View>: View {
+    let model: PrioritiesModel
+    let drafts: PriorityDrafts
+    /// The item swiped open to show its actions, on iOS.
+    @Binding var swipedOpenID: String?
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                content
+                    .frame(maxWidth: 820, alignment: .leading)
+                    .padding(24)
+                    // The scroll view only spans its content's width, so the
+                    // content fills the pane to keep the scroller at its edge.
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .environment(drafts)
+            .lockedWhileSaving(model.saving != nil)
+            .overlay(alignment: .bottom) {
+                ZStack {
+                    if let save = model.saving {
+                        PrioritySavingBar(save: save, waiting: model.savesWaiting)
+                            .padding(20)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.15), value: model.saving != nil)
+            }
+            #if os(iOS)
+            // Scrolling closes a row swiped open, as in Mail.
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, _ in
+                if swipedOpenID != nil { swipedOpenID = nil }
+            }
+            .environment(\.revealInPriorities) { id in
+                withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+            }
+            #endif
+        }
+    }
+}
+
+/// A page's priorities, each edited in place, with the row Return opens
+/// under one for the next, and at the end, when `canAdd`, the field for a
+/// new one.
+struct PriorityItemList: View {
+    let day: PriorityDay
+    let model: PrioritiesModel
+    /// Shown when the page has none.
+    let emptyText: String
+    let canAdd: Bool
+    /// What one is called where a new one is typed.
+    var itemName = "priority"
+    /// Where a new one is being typed, on whichever page it is.
+    @Binding var newItemSpot: NewItemSpot?
+    /// The item swiped open to show its actions, on iOS.
+    @Binding var swipedOpenID: String?
+
+    #if os(iOS)
+    /// Rows carry their own padding and separator, as in Reminders.
+    private static let rowSpacing: CGFloat = 0
+    #else
+    private static let rowSpacing: CGFloat = 6
+    #endif
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if day.items.isEmpty {
+                Text(emptyText)
+                    .scaledFont(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: Self.rowSpacing) {
+                    ForEach(day.items) { item in
+                        let spot = NewItemSpot(pageID: day.pageID, afterID: item.id)
+                        let hasComments = model.hasComments(item, in: day)
+                        PriorityItemRow(
+                            item: item,
+                            day: day,
+                            threads: model.threads(on: item, in: day),
+                            hasComments: hasComments,
+                            canMoveToToday: model.todayRef.map { $0.pageID != day.pageID } ?? false,
+                            isBusy: model.busyItemIDs.contains(item.id),
+                            model: model,
+                            swipedOpenID: $swipedOpenID,
+                            onReturn: { newItemSpot = spot }
+                        )
+                        if newItemSpot == spot {
+                            NewPriorityRow(itemName: itemName) { text in
+                                // The next one starts under the one just added.
+                                newItemSpot = model.add(text, to: day, after: item.id)
+                                    .map { NewItemSpot(pageID: day.pageID, afterID: $0) }
+                            } onEnd: { text in
+                                #if os(iOS)
+                                // On iOS, as in Reminders there, leaving it keeps what was typed.
+                                model.add(text, to: day, after: item.id)
+                                #endif
+                                if newItemSpot == spot { newItemSpot = nil }
+                            }
+                        }
+                    }
+                }
+            }
+            if canAdd {
+                AddPriorityField(day: day, model: model, itemName: itemName)
+            }
+        }
+    }
+}
+
+/// A load or save error, above the priorities.
+struct PriorityErrorLabel: View {
+    let message: String
+
+    var body: some View {
+        Label(message, systemImage: "exclamationmark.triangle")
+            .scaledFont(.callout)
+            .foregroundStyle(.orange)
+            .textSelection(.enabled)
+    }
+}
+
 /// Every day under the folder, newest first and grouped by month, shown
-/// on the right. Picking one shows it on its own in the main pane.
+/// on the right. Picking one shows it on its own in the main pane; its menu
+/// opens it in Confluence or deletes its page, asking first unless the
+/// page is blank.
 private struct PriorityDayList: View {
     let model: PrioritiesModel
 
     @Environment(SessionStore.self) private var session
     @Environment(\.openURL) private var openURL
+    /// A page with something on it, waiting for the user to confirm its deletion.
+    @State private var pendingDelete: PendingDelete?
+
+    private struct PendingDelete {
+        let ref: PriorityDayRef
+        /// The page as it was read just now.
+        let page: PriorityDay
+    }
 
     private var months: [(key: String, value: [PriorityDayRef])] {
         Dictionary(grouping: model.index) { PriorityNaming.monthTitle(for: $0.day) }
@@ -520,7 +582,9 @@ private struct PriorityDayList: View {
                         HStack(spacing: 6) {
                             Text(ref.day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
                             Spacer(minLength: 4)
-                            if ref.title == model.todayTitle {
+                            if model.deletingPageIDs.contains(ref.pageID) {
+                                ProgressView().controlSize(.mini)
+                            } else if ref.title == model.todayTitle {
                                 Text("Today")
                                     .scaledFont(.caption.weight(.semibold))
                                     .foregroundStyle(.secondary)
@@ -534,6 +598,11 @@ private struct PriorityDayList: View {
                                     openURL(ref.webURL(on: client.credentials.siteURL))
                                 }
                             }
+                            Divider()
+                            Button("Delete Page", systemImage: "trash", role: .destructive) {
+                                Task { await delete(ref) }
+                            }
+                            .disabled(model.deletingPageIDs.contains(ref.pageID))
                         }
                     }
                 } header: {
@@ -546,6 +615,38 @@ private struct PriorityDayList: View {
                 ProgressView()
             }
         }
+        .confirmationDialog(
+            "Delete the page for \(pendingDelete.map { $0.ref.day.formatted(.dateTime.weekday(.wide).month(.wide).day().year()) } ?? "this day")?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDelete
+        ) { pending in
+            Button("Delete Page", role: .destructive) {
+                Task { await model.deleteDay(pending.ref) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { pending in
+            Text(contents(of: pending.page) + " Deleting it moves it to the space's trash in Confluence.")
+        }
+    }
+
+    /// Reads the page again, so what's on it now decides: a blank page goes
+    /// straight away, and one with anything on it asks first.
+    private func delete(_ ref: PriorityDayRef) async {
+        guard let page = await model.currentPage(of: ref) else { return }
+        if page.document.isBlank {
+            await model.deleteDay(ref)
+        } else {
+            pendingDelete = PendingDelete(ref: ref, page: page)
+        }
+    }
+
+    /// What a page that isn't blank has on it, for the warning.
+    private func contents(of page: PriorityDay) -> String {
+        let count = page.items.count
+        guard count > 0 else { return "The page isn't empty." }
+        let listed = "It lists \(count) \(count == 1 ? "priority" : "priorities")"
+        return page.openCount == 0 ? "\(listed), all done." : "\(listed), \(page.openCount) not done."
     }
 }
 
@@ -622,7 +723,7 @@ private struct PrioritySavingBar: View {
 
 /// Where a comment is being typed under an item: a new thread on it, or a
 /// reply in one of its threads.
-private enum CommentSpot: Hashable {
+enum CommentSpot: Hashable {
     case newThread
     case reply(threadID: String)
 }
@@ -631,7 +732,7 @@ private enum CommentSpot: Hashable {
 /// rather than the days: the list lets go of a day far off screen and
 /// builds it afresh when it's back, so it would otherwise be lost.
 @Observable
-private final class PriorityDrafts {
+final class PriorityDrafts {
     /// The new priority in the add field.
     var newPriority = ""
     /// The comment box open on each item, by item id.
@@ -1293,6 +1394,8 @@ private struct EndsEditingOnClickOutside: ViewModifier {
 private struct AddPriorityField: View {
     let day: PriorityDay
     let model: PrioritiesModel
+    /// What one is called: "priority", "question".
+    let itemName: String
 
     @Environment(PriorityDrafts.self) private var drafts
     @FocusState private var isFocused: Bool
@@ -1316,7 +1419,7 @@ private struct AddPriorityField: View {
                 .frame(width: PriorityItemRow.checkWidth)
             // Return adds it and stays for the next; the checkmark in the
             // navigation bar adds it and closes the keyboard.
-            TextField("New Priority", text: Bindable(drafts).newPriority, axis: .vertical)
+            TextField("New \(itemName.capitalized)", text: Bindable(drafts).newPriority, axis: .vertical)
                 .lineLimit(1...4)
                 .focused($isFocused)
                 .onChange(of: text) { old, new in
@@ -1349,7 +1452,7 @@ private struct AddPriorityField: View {
             Image(systemName: "plus")
                 .foregroundStyle(.secondary)
                 .frame(width: PriorityItemRow.checkWidth)
-            TextField("Add a priority…", text: Bindable(drafts).newPriority, axis: .vertical)
+            TextField("Add a \(itemName)…", text: Bindable(drafts).newPriority, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
                 .focused($isFocused)
@@ -1372,6 +1475,8 @@ private struct AddPriorityField: View {
 /// the Mac, Esc or a click elsewhere drops it unsaved; on iOS, leaving it
 /// keeps what was typed, as Reminders does there.
 private struct NewPriorityRow: View {
+    /// What one is called: "priority", "question".
+    let itemName: String
     /// Return was pressed with this text.
     let onSubmit: (String) -> Void
     /// The row was left with this text in it.
@@ -1406,7 +1511,7 @@ private struct NewPriorityRow: View {
                 .labelsHidden()
                 .disabled(true)
             #endif
-            TextField("New Priority", text: $text, axis: .vertical)
+            TextField("New \(itemName.capitalized)", text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...6)
                 .focused($isFocused)

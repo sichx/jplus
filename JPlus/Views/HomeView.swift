@@ -16,6 +16,8 @@ struct HomeView: View {
         case myIssues
         case mentions
         case priorities
+        /// Nested under Daily Priorities.
+        case productQuestions
         case version(VersionRoute)
         /// A Jira space (project), listed under Spaces.
         case space(JiraProject)
@@ -50,6 +52,7 @@ struct HomeView: View {
     /// Project chosen on the Versions screen; its versions nest in the sidebar.
     @AppStorage("versionsProjectKey") private var versionsProjectKey = ""
     @AppStorage("sidebarVersionsExpanded") private var versionsExpanded = true
+    @AppStorage("sidebarPrioritiesExpanded") private var prioritiesExpanded = true
     @State private var sidebarVersions: [VersionRoute] = []
     @State private var isRefreshingVersions = false
     @AppStorage("sidebarSpacesExpanded") private var spacesExpanded = false
@@ -199,9 +202,22 @@ struct HomeView: View {
                     Label("Mentions", systemImage: "at")
                         .tag(SidebarItem.mentions)
                 }
-                if shows(.priorities) {
-                    Label("Daily Priorities", systemImage: "checklist")
-                        .tag(SidebarItem.priorities)
+                if shows(.priorities), shows(.productQuestions) {
+                    #if os(macOS)
+                    DisclosureGroup(isExpanded: $prioritiesExpanded) {
+                        productQuestionsRow
+                    } label: {
+                        prioritiesRow
+                    }
+                    #else
+                    prioritiesRow
+                    productQuestionsRow
+                        .padding(.leading, 20)
+                    #endif
+                } else if shows(.priorities) {
+                    prioritiesRow
+                } else if shows(.productQuestions) {
+                    productQuestionsRow
                 }
 
                 if shows(.spaces), !sidebarSpaces.isEmpty {
@@ -302,6 +318,16 @@ struct HomeView: View {
                 .strokeBorder(Color.secondary.opacity(spacesFilterFocused ? 0.45 : 0.22))
         )
         .selectionDisabled()
+    }
+
+    private var prioritiesRow: some View {
+        Label("Daily Priorities", systemImage: "checklist")
+            .tag(SidebarItem.priorities)
+    }
+
+    private var productQuestionsRow: some View {
+        Label("Product Questions", systemImage: "questionmark.bubble")
+            .tag(SidebarItem.productQuestions)
     }
 
     private var versionsRow: some View {
@@ -535,6 +561,8 @@ struct HomeView: View {
             MentionsView(user: user, onOpenIssue: pushIssue)
         case .priorities:
             PrioritiesView(onOpenIssue: pushIssue)
+        case .productQuestions:
+            ProductQuestionsView(onOpenIssue: pushIssue)
         case .account:
             AccountView(user: user)
         case .search:
@@ -627,6 +655,7 @@ struct HomeView: View {
         case .myIssues: .myIssues
         case .mentions: .mentions
         case .priorities: .priorities
+        case .productQuestions: .productQuestions
         case .account: .account
         case .search: .search
         case .versions: .versions
@@ -681,6 +710,7 @@ struct HomeView: View {
         case .myIssues: return .myIssues
         case .mentions: return .mentions
         case .priorities: return .priorities
+        case .productQuestions: return .productQuestions
         case .account: return .account
         case .search: return .search
         case .versions: return .versions

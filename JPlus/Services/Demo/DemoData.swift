@@ -599,6 +599,16 @@ nonisolated enum DemoData {
                                   version: 1, body: String(decoding: json, as: UTF8.self)))
         }
 
+        // Product Questions, beside the Daily Priorities folder.
+        let questions = ADF.doc([ADF.taskList([
+            ADF.task(["Ask ", ADF.mention(sam), " whether 2.6.0 can ship without the widgets (APP-140)"]),
+            ADF.task(["Should the offline banner (APP-114) show on the web app too?"]),
+            ADF.task(["Confirm the rest timer keeps counting when the phone locks"], done: true),
+        ])])
+        let questionsJSON = (try? JSONSerialization.data(withJSONObject: questions, options: [.withoutEscapingSlashes])) ?? Data()
+        pages.append(DemoPage(id: "1100", title: "Product Questions", parentID: "900",
+                              version: 1, body: String(decoding: questionsJSON, as: UTF8.self)))
+
         return DemoState(
             users: [reviewer, maya, diego, priya, sam, lena, tom, ava],
             statuses: statuses,

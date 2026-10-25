@@ -49,7 +49,8 @@ nonisolated struct PriorityCommentThread: Identifiable, Hashable, Sendable {
     var id: String { root.id }
 }
 
-/// One day's page under the Daily Priorities folder, named `yyyy-MM-dd`.
+/// One day's page under the Daily Priorities folder, named `yyyy-MM-dd`,
+/// or the Product Questions page, which has no day of its own.
 nonisolated struct PriorityDay: Identifiable, Hashable, Sendable {
     let pageID: String
     let title: String
@@ -138,6 +139,33 @@ nonisolated enum PriorityNaming {
             if isParentFolderTitle(parent.title) { matches.append(folder) }
         }
         return matches.count == 1 ? matches.first : nil
+    }
+
+    /// The page id in a link like `…/wiki/spaces/VPE1/pages/2420932609/Product+Questions`
+    /// or `…/viewpage.action?pageId=2420932609`, or a bare id.
+    static func pageID(from input: String) -> String? {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.wholeMatch(of: /\d+/) != nil { return text }
+        guard let match = text.firstMatch(of: /\/pages\/(\d+)/) ?? text.firstMatch(of: /[?&]pageId=(\d+)/) else { return nil }
+        return String(match.1)
+    }
+
+    /// The Product Questions page: one page with a checklist like a day's,
+    /// shown under Daily Priorities. Found by title, like the folder.
+    static let questionsPageTitle = "Product Questions"
+
+    /// The site's one "Product Questions" page, or nil when there is none or
+    /// more than one, in which case the user picks.
+    static func findQuestionsPage(using client: JiraClient) async throws -> ConfluencePage? {
+        let results = try await client.confluenceSearch(cql: "type = page and title = \"\(questionsPageTitle)\"")
+        let ids = results.compactMap { result -> String? in
+            guard let content = result.content, content.type == "page",
+                  (content.title ?? result.title ?? "").caseInsensitiveCompare(questionsPageTitle) == .orderedSame
+            else { return nil }
+            return content.id
+        }
+        guard ids.count == 1 else { return nil }
+        return try await client.confluencePage(id: ids[0])
     }
 
     private static let month: DateFormatter = formatter("yyyy-MM")
@@ -247,6 +275,17 @@ nonisolated extension ADFNode {
         }
         let itemID = type == "taskItem" ? attr("localId") : itemID
         return children.flatMap { $0.textRuns(in: itemID) }
+    }
+
+    /// Whether the document shows nothing: no text, checkboxes, cards or
+    /// anything else, only empty paragraphs and lists.
+    var isBlank: Bool {
+        switch type {
+        case "doc", "paragraph", "taskList", "bulletList", "orderedList": children.allSatisfy(\.isBlank)
+        case "text": (text ?? "").allSatisfy(\.isWhitespace)
+        case "hardBreak": true
+        default: false
+        }
     }
 
     /// A copy without inline comment highlights; other marks stay.
