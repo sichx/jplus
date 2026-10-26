@@ -158,12 +158,17 @@ picks a date, today by default, and creates that day's page inside its
 month folder, making the folder when it's the month's first day. A date
 that already has a page can't be created again; the picker says so and
 offers to open it. It can also copy the unfinished items from the most
-recent earlier day. Right-click a day in that list for Delete Page: the page
-is read again first, and one with anything on it (priorities or other
+recent earlier day. Right-click a day in that list for Archive Page: the
+page is read again first, and one with anything on it (priorities or other
 content) asks before it goes; a blank one goes straight away. Confluence
-moves it to the space's trash, and its month folder stays. Deleting needs
-the space's delete permission, which not every account has; without it
-Confluence refuses with a 403 or 404 and the day stays.
+moves it to the space's archive, where it can be restored, and its month
+folder stays. Archived pages drop out of the folder listing, so the day
+stays gone after Refresh. Archiving takes the space's Archive permission,
+which accounts without Delete often have. It goes through v1's
+`POST /wiki/rest/api/content/archive`, which only queues a job; the app
+follows it at `/wiki/rest/api/longtask/{id}` for up to 30 seconds, and if
+the job is still queued by then, takes the day off the list anyway with a
+note that it may show again until Confluence is done.
 
 Tick a box to finish an item, click its text to change it, right-click for
 Edit, Add Comment…, Move to Today and Delete. Move to Today, on an item

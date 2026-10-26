@@ -194,7 +194,7 @@ nonisolated final class DemoServer: @unchecked Sendable {
         if let p = match(method, parts, "GET wiki/api/v2/folders/*/direct-children") {
             let id = p[0]
             let folders = state.folders.filter { $0.parentID == id }.map { ["id": $0.id, "title": $0.title, "type": "folder", "status": "current"] }
-            let pages = state.pages.filter { $0.parentID == id }.map { ["id": $0.id, "title": $0.title, "type": "page", "status": "current"] }
+            let pages = state.pages.filter { $0.parentID == id && $0.status == "current" }.map { ["id": $0.id, "title": $0.title, "type": "page", "status": "current"] }
             return ok(["results": folders + pages])
         }
         if match(method, parts, "POST wiki/api/v2/folders") != nil {
@@ -269,6 +269,19 @@ nonisolated final class DemoServer: @unchecked Sendable {
             if let title = json["title"] as? String { state.pages[index].title = title }
             if let value = (json["body"] as? [String: Any])?["value"] as? String { state.pages[index].body = value }
             return ok(pageJSON(state.pages[index]))
+        }
+        if match(method, parts, "POST wiki/rest/api/content/archive") != nil {
+            // Archived at once; the job it reports has always finished.
+            let ids = ((json["pages"] as? [[String: Any]]) ?? []).compactMap { ($0["id"] as? Int).map(String.init) ?? $0["id"] as? String }
+            let indices = ids.compactMap { id in state.pages.firstIndex { $0.id == id && $0.status == "current" } }
+            guard !ids.isEmpty, indices.count == ids.count else { return error(400, "Each page must exist and not be archived already.") }
+            for index in indices { state.pages[index].status = "archived" }
+            let task = newID()
+            return ok(["id": task, "links": ["status": "/rest/api/longtask/\(task)"]], status: 202)
+        }
+        if let p = match(method, parts, "GET wiki/rest/api/longtask/*") {
+            return ok(["id": p[0], "finished": true, "successful": true, "percentageComplete": 100, "status": "FINISH_SUCCESS",
+                       "messages": [], "errors": []])
         }
         if let p = match(method, parts, "DELETE wiki/api/v2/pages/*") {
             let id = p[0]
@@ -419,7 +432,7 @@ nonisolated final class DemoServer: @unchecked Sendable {
         guard let title else { return ok(["results": []]) }
         let folders = state.folders.filter { $0.title.caseInsensitiveCompare(title) == .orderedSame && !cql.contains("type = page") }
             .map { ["title": $0.title, "content": ["id": $0.id, "type": "folder", "title": $0.title]] }
-        let pages = state.pages.filter { $0.title.caseInsensitiveCompare(title) == .orderedSame && !cql.contains("type = folder") }
+        let pages = state.pages.filter { $0.title.caseInsensitiveCompare(title) == .orderedSame && $0.status == "current" && !cql.contains("type = folder") }
             .map { ["title": $0.title, "content": ["id": $0.id, "type": "page", "title": $0.title]] }
         return ok(["results": folders + pages])
     }
@@ -488,7 +501,7 @@ nonisolated final class DemoServer: @unchecked Sendable {
 
     private func pageJSON(_ page: DemoPage) -> [String: Any] {
         [
-            "id": page.id, "title": page.title, "spaceId": "98301", "parentId": page.parentID, "status": "current",
+            "id": page.id, "title": page.title, "spaceId": "98301", "parentId": page.parentID, "status": page.status,
             "version": ["number": page.version],
             "body": ["atlas_doc_format": ["value": page.body, "representation": "atlas_doc_format"]],
             "_links": ["webui": "/spaces/APP/pages/\(page.id)/\(page.title)", "base": "\(DemoSite.siteURL)/wiki"],

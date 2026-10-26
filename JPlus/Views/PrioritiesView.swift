@@ -550,17 +550,17 @@ struct PriorityErrorLabel: View {
 
 /// Every day under the folder, newest first and grouped by month, shown
 /// on the right. Picking one shows it on its own in the main pane; its menu
-/// opens it in Confluence or deletes its page, asking first unless the
+/// opens it in Confluence or archives its page, asking first unless the
 /// page is blank.
 private struct PriorityDayList: View {
     let model: PrioritiesModel
 
     @Environment(SessionStore.self) private var session
     @Environment(\.openURL) private var openURL
-    /// A page with something on it, waiting for the user to confirm its deletion.
-    @State private var pendingDelete: PendingDelete?
+    /// A page with something on it, waiting for the user to confirm archiving it.
+    @State private var pendingArchive: PendingArchive?
 
-    private struct PendingDelete {
+    private struct PendingArchive {
         let ref: PriorityDayRef
         /// The page as it was read just now.
         let page: PriorityDay
@@ -582,7 +582,7 @@ private struct PriorityDayList: View {
                         HStack(spacing: 6) {
                             Text(ref.day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
                             Spacer(minLength: 4)
-                            if model.deletingPageIDs.contains(ref.pageID) {
+                            if model.archivingPageIDs.contains(ref.pageID) {
                                 ProgressView().controlSize(.mini)
                             } else if ref.title == model.todayTitle {
                                 Text("Today")
@@ -599,10 +599,10 @@ private struct PriorityDayList: View {
                                 }
                             }
                             Divider()
-                            Button("Delete Page", systemImage: "trash", role: .destructive) {
-                                Task { await delete(ref) }
+                            Button("Archive Page", systemImage: "archivebox") {
+                                Task { await archive(ref) }
                             }
-                            .disabled(model.deletingPageIDs.contains(ref.pageID))
+                            .disabled(model.archivingPageIDs.contains(ref.pageID))
                         }
                     }
                 } header: {
@@ -616,28 +616,28 @@ private struct PriorityDayList: View {
             }
         }
         .confirmationDialog(
-            "Delete the page for \(pendingDelete.map { $0.ref.day.formatted(.dateTime.weekday(.wide).month(.wide).day().year()) } ?? "this day")?",
-            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            "Archive the page for \(pendingArchive.map { $0.ref.day.formatted(.dateTime.weekday(.wide).month(.wide).day().year()) } ?? "this day")?",
+            isPresented: Binding(get: { pendingArchive != nil }, set: { if !$0 { pendingArchive = nil } }),
             titleVisibility: .visible,
-            presenting: pendingDelete
+            presenting: pendingArchive
         ) { pending in
-            Button("Delete Page", role: .destructive) {
-                Task { await model.deleteDay(pending.ref) }
+            Button("Archive Page") {
+                Task { await model.archiveDay(pending.ref) }
             }
             Button("Cancel", role: .cancel) {}
         } message: { pending in
-            Text(contents(of: pending.page) + " Deleting it moves it to the space's trash in Confluence.")
+            Text(contents(of: pending.page) + " Archiving moves it to the space's archive in Confluence, where it can be restored.")
         }
     }
 
     /// Reads the page again, so what's on it now decides: a blank page goes
     /// straight away, and one with anything on it asks first.
-    private func delete(_ ref: PriorityDayRef) async {
+    private func archive(_ ref: PriorityDayRef) async {
         guard let page = await model.currentPage(of: ref) else { return }
         if page.document.isBlank {
-            await model.deleteDay(ref)
+            await model.archiveDay(ref)
         } else {
-            pendingDelete = PendingDelete(ref: ref, page: page)
+            pendingArchive = PendingArchive(ref: ref, page: page)
         }
     }
 

@@ -34,8 +34,8 @@ final class PrioritiesModel {
     private var saveQueue: [(id: UUID, save: PrioritySave)] = []
     /// True while a new day's page is being created.
     private(set) var isCreatingDay = false
-    /// Ids of day pages being deleted.
-    private(set) var deletingPageIDs: Set<String> = []
+    /// Ids of day pages being archived.
+    private(set) var archivingPageIDs: Set<String> = []
 
     private var client: JiraClient?
     private var folderID = ""
@@ -53,6 +53,8 @@ final class PrioritiesModel {
     private var generation = 0
     /// How many days the main pane opens with.
     private let initialDayCount = 5
+    /// How long archiving a day follows Confluence's background job.
+    private static let archiveWait: Duration = .seconds(30)
 
     var siteURL: URL { client?.credentials.siteURL ?? URL(string: "https://atlassian.net")! }
 
@@ -392,11 +394,11 @@ final class PrioritiesModel {
         index.sort { $0.title > $1.title }
     }
 
-    // MARK: - Deleting a day
+    // MARK: - Archiving a day
 
-    /// A day's page as it is now in Confluence, so deleting it can warn about
-    /// what's on it, including anything added since it loaded. Nil, with the
-    /// error shown, when it couldn't be read.
+    /// A day's page as it is now in Confluence, so archiving it can warn
+    /// about what's on it, including anything added since it loaded. Nil,
+    /// with the error shown, when it couldn't be read.
     func currentPage(of ref: PriorityDayRef) async -> PriorityDay? {
         guard let client else { return nil }
         do {
@@ -408,25 +410,43 @@ final class PrioritiesModel {
         }
     }
 
-    /// Deletes a day's page, which Confluence moves to the space's trash, and
-    /// takes it off the screen. Its month folder stays, even when left empty.
-    func deleteDay(_ ref: PriorityDayRef) async {
+    /// Archives a day's page, which Confluence moves out of its month folder
+    /// into the space's archive, where it can be restored, and takes it off
+    /// the screen. Its month folder stays, even when left empty. Confluence
+    /// archives in the background, sometimes after a wait in its queue, so
+    /// this follows along for a while; past that, the day goes anyway, with
+    /// a note that it may show again until Confluence is done.
+    func archiveDay(_ ref: PriorityDayRef) async {
         guard let client else { return }
-        deletingPageIDs.insert(ref.pageID)
-        defer { deletingPageIDs.remove(ref.pageID) }
-        // After any edit still saving, which would otherwise land on a trashed page.
+        archivingPageIDs.insert(ref.pageID)
+        defer { archivingPageIDs.remove(ref.pageID) }
+        // After any edit still saving, which would otherwise land on an archived page.
         _ = await lastWrite?.value
+        let taskID: String
         do {
-            try await client.deleteConfluencePage(id: ref.pageID)
+            taskID = try await client.archiveConfluencePage(id: ref.pageID)
         } catch JiraError.forbidden, JiraError.notFound {
-            // Confluence answers 404 too, to someone it won't let delete the page.
-            errorMessage = "Confluence didn't let you delete \(ref.title). Your account may not be allowed to delete pages in this space."
+            // Confluence answers 404 too, to someone it won't let archive the page.
+            errorMessage = "Confluence didn't let you archive \(ref.title). Your account may not be allowed to archive pages in this space."
             return
         } catch {
-            errorMessage = "Couldn't delete \(ref.title): \(error.localizedDescription)"
+            errorMessage = "Couldn't archive \(ref.title): \(error.localizedDescription)"
             return
         }
-        errorMessage = nil
+        // It was accepted, so a status that won't load counts as still going.
+        var task = try? await client.confluenceLongTask(id: taskID)
+        let deadline = ContinuousClock.now + Self.archiveWait
+        while task?.finished != true, ContinuousClock.now < deadline {
+            do { try await Task.sleep(for: .seconds(1)) } catch { break }
+            task = try? await client.confluenceLongTask(id: taskID)
+        }
+        if let task, task.finished, !task.successful {
+            let reason = task.problems.isEmpty ? "." : ": " + task.problems.joined(separator: " ")
+            errorMessage = "Confluence couldn't archive \(ref.title)\(reason)"
+            return
+        }
+        errorMessage = task?.finished == true ? nil
+            : "Confluence is still archiving \(ref.title), so it may show again on Refresh until that's done."
         index.removeAll { $0.pageID == ref.pageID }
         pages[ref.pageID] = nil
         commentThreads[ref.pageID] = nil

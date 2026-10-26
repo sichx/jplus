@@ -115,6 +115,8 @@ nonisolated struct DemoPage: Sendable {
     var version: Int
     /// ADF as a JSON string, as Confluence stores it.
     var body: String
+    /// `current`, or `archived` once archived, which takes it out of its folder.
+    var status = "current"
 }
 
 /// An open inline comment on a day page, or a reply to one.

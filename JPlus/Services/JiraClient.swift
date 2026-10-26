@@ -798,10 +798,12 @@ struct JiraClient: Sendable {
         struct Body: Decodable {
             let errorMessages: [String]?
             let errors: [String: String]?
+            /// Where Confluence's v1 API says what went wrong.
+            let message: String?
         }
         guard let body = try? JSONDecoder().decode(Body.self, from: data) else { return nil }
         let fieldErrors = (body.errors ?? [:]).sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }
-        let messages = (body.errorMessages ?? []) + fieldErrors
+        let messages = (body.errorMessages ?? []) + fieldErrors + [body.message].compactMap { $0 }
         return messages.isEmpty ? nil : messages.joined(separator: " ")
     }
 }

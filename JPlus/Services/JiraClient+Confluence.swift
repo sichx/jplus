@@ -119,6 +119,23 @@ extension JiraClient {
         try await delete("/wiki/api/v2/pages/\(id)")
     }
 
+    /// Asks Confluence to archive a page: it leaves its folder for the
+    /// space's archive, where it can be restored. That happens in the
+    /// background; follow it with `confluenceLongTask` and the returned id.
+    /// Takes the space's Archive permission, which can come without Delete.
+    func archiveConfluencePage(id: String) async throws -> String {
+        struct Accepted: Decodable { let id: String }
+        let accepted: Accepted = try await post("/wiki/rest/api/content/archive", json: [
+            "pages": [["id": Int(id).map { $0 as Any } ?? id]],
+        ])
+        return accepted.id
+    }
+
+    /// A background job Confluence is running, such as an archive.
+    func confluenceLongTask(id: String) async throws -> ConfluenceLongTask {
+        try await get("/wiki/rest/api/longtask/\(id)")
+    }
+
     /// Pages and comments take ADF as a JSON string, with the schema version at the root.
     private static func confluenceBody(_ document: ADFNode) throws -> [String: Any] {
         let data = try JSONEncoder().encode(document)

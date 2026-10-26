@@ -130,3 +130,32 @@ nonisolated struct ConfluenceComment: Decodable, Identifiable, Hashable, Sendabl
         return URL(string: (_links?.base ?? siteURL.absoluteString + "/wiki") + webui)
     }
 }
+
+/// `GET /wiki/rest/api/longtask/{id}`: a background job, such as archiving
+/// pages. It waits as `ENQUEUED` until Confluence gets to it.
+nonisolated struct ConfluenceLongTask: Decodable, Hashable, Sendable {
+    let id: String
+    let finished: Bool
+    let successful: Bool
+    /// What went wrong, when it failed, as Confluence words it.
+    let problems: [String]
+
+    nonisolated private struct Message: Decodable {
+        let translation: String?
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, finished, successful, messages, errors
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        finished = try container.decodeIfPresent(Bool.self, forKey: .finished) ?? false
+        successful = try container.decodeIfPresent(Bool.self, forKey: .successful) ?? false
+        // Their shape isn't documented, so they're read only if they're as seen.
+        let errors = (try? container.decodeIfPresent([Message].self, forKey: .errors)) ?? []
+        let messages = (try? container.decodeIfPresent([Message].self, forKey: .messages)) ?? []
+        problems = (errors + messages).compactMap(\.translation).filter { !$0.isEmpty }
+    }
+}
