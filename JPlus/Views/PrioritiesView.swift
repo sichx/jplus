@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The team's daily priorities, kept as one Confluence page per day under a
 /// shared folder (a `yyyy-MM` folder per month, a `yyyy-MM-dd` page per
-/// day). The main pane opens on the last five days, with earlier days loaded
+/// day). The main pane opens on the last three days, with earlier days loaded
 /// below them on request; the day list on the right holds every day.
 struct PrioritiesView: View {
     let onOpenIssue: (String) -> Void

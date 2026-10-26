@@ -150,8 +150,9 @@ it; if there isn't exactly one, it asks you to paste the folder's link
 `yyyy-MM` folder and each day a `yyyy-MM-dd` page whose body is a native
 Confluence task list.
 
-The main pane shows one day, today by default. Load Previous Day at the
-bottom adds the next earlier day below it, as many times as you like. The
+The main pane opens on the three most recent days, starting from today
+when it has a page. Load Previous Day at the bottom adds the next earlier
+day below them, as many times as you like. The
 list on the right (toolbar > Show Days) has every day, newest first and
 grouped by month; picking one shows it on its own. New Day in the toolbar
 picks a date, today by default, and creates that day's page inside its

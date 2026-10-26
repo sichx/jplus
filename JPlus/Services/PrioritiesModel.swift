@@ -52,7 +52,7 @@ final class PrioritiesModel {
     @ObservationIgnored private var pendingEdits: [(id: UUID, pageID: String, transform: (ADFNode) -> ADFNode)] = []
     private var generation = 0
     /// How many days the main pane opens with.
-    private let initialDayCount = 5
+    private let initialDayCount = 3
     /// How long archiving a day follows Confluence's background job.
     private static let archiveWait: Duration = .seconds(30)
 
