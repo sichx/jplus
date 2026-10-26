@@ -4,6 +4,7 @@ import SwiftUI
 struct JPlusApp: App {
     @State private var session = SessionStore()
     @State private var settings = SettingsStore()
+    @State private var github = GitHubStore()
     @AppStorage(TextSize.storageKey) private var textSizeStep = TextSize.standardStep
     @AppStorage(AppFont.storageKey) private var appFont = AppFont.standard
     @AppStorage(SidebarSection.hiddenStorageKey) private var hiddenSidebarRaw = ""
@@ -23,9 +24,11 @@ struct JPlusApp: App {
             ContentView()
                 .environment(session)
                 .environment(settings)
+                .environment(github)
                 .textSize(step: textSizeStep, font: appFont)
                 .task { await settings.load() }
                 .task { await session.restore() }
+                .task(id: session.currentAccountID) { await github.load(for: session.currentAccountID) }
                 .appSettings()
                 #if os(macOS)
                 .frame(minWidth: 480, minHeight: 360)
@@ -89,6 +92,8 @@ struct JPlusApp: App {
                 .environment(settings)
                 .environment(session)
                 .environment(updater)
+                .environment(github)
+
         }
         #endif
     }
