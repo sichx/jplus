@@ -22,6 +22,20 @@ struct VersionDetailView: View {
     @State private var draggedHeaderHeight: CGFloat?
     /// Header height when the current drag began.
     @State private var dragStartHeaderHeight: CGFloat?
+    #if os(iOS)
+    /// The half of the page on screen on iPhone and iPad, where the header
+    /// and issues each get the whole page rather than splitting it.
+    @AppStorage("versionPage") private var page = Page.highlights
+
+    private enum Page: String {
+        case highlights, issues
+    }
+
+    /// "v2.6.0" for a name that's just a number; the name as it is otherwise.
+    private var versionLabel: String {
+        version.name.first?.isNumber == true ? "v\(version.name)" : version.name
+    }
+    #endif
 
     /// Past development, so counted as completed along with Jira's Done
     /// category (Done, Won't Do), though Jira files them under In Progress.
@@ -60,6 +74,59 @@ struct VersionDetailView: View {
     }
 
     var body: some View {
+        content
+            .navigationTitle(version.name)
+            .navigationSubtitleIfAvailable(route.project.name)
+            .toolbar {
+                ToolbarItemGroup(placement: .secondaryAction) {
+                    Button("Refresh", systemImage: "arrow.clockwise") {
+                        Task {
+                            async let issues: Void = run()
+                            async let notes: Void = loadHighlights()
+                            _ = await (issues, notes)
+                        }
+                    }
+                    .keyboardShortcut("r", modifiers: .command)
+                    if let client = session.client {
+                        Button("Open in Jira", systemImage: "safari") {
+                            openURL(client.browseURL(projectKey: route.project.key, versionID: version.id))
+                        }
+                        .keyboardShortcut("o", modifiers: [.command, .shift])
+                        .help("Open this release in Jira (⇧⌘O)")
+                    }
+                }
+            }
+            .loadTask { await run() }
+            .loadTask { await loadHighlights() }
+            .onChange(of: hideCompleted) { Task { await run() } }
+            .onChange(of: onlyAppTeam) { Task { await run() } }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        #if os(iOS)
+        // A phone's height split between header and issues leaves too little
+        // of either, so a segmented control in the navigation bar shows one at
+        // a time. Both stay in place, so switching keeps each one's scroll
+        // position and filter.
+        ZStack {
+            ScrollView { header }
+                .shown(page == .highlights)
+            issues
+                .shown(page == .issues)
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("Show", selection: $page.animation(.easeInOut(duration: 0.2))) {
+                    Text("\(versionLabel) Highlights").tag(Page.highlights)
+                    Text("Issues").tag(Page.issues)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+        }
+        #else
         // Not a VSplitView: it keeps its divider where it first put it, so the
         // issues wouldn't follow the header as highlights load or change length.
         GeometryReader { proxy in
@@ -75,31 +142,7 @@ struct VersionDetailView: View {
                     .frame(maxHeight: .infinity)
             }
         }
-        .navigationTitle(version.name)
-        .navigationSubtitleIfAvailable(route.project.name)
-        .toolbar {
-            ToolbarItemGroup(placement: .secondaryAction) {
-                Button("Refresh", systemImage: "arrow.clockwise") {
-                    Task {
-                        async let issues: Void = run()
-                        async let notes: Void = loadHighlights()
-                        _ = await (issues, notes)
-                    }
-                }
-                .keyboardShortcut("r", modifiers: .command)
-                if let client = session.client {
-                    Button("Open in Jira", systemImage: "safari") {
-                        openURL(client.browseURL(projectKey: route.project.key, versionID: version.id))
-                    }
-                    .keyboardShortcut("o", modifiers: [.command, .shift])
-                    .help("Open this release in Jira (⇧⌘O)")
-                }
-            }
-        }
-        .loadTask { await run() }
-        .loadTask { await loadHighlights() }
-        .onChange(of: hideCompleted) { Task { await run() } }
-        .onChange(of: onlyAppTeam) { Task { await run() } }
+        #endif
     }
 
     /// As tall as the header's content, so the issues start right below its
@@ -133,14 +176,25 @@ struct VersionDetailView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let description = nonEmpty(version.description) ?? highlights?.description
+        return VStack(alignment: .leading, spacing: 10) {
+            #if os(iOS)
+            // The name is in the navigation bar's picker, so the state leads the description.
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VersionStateBadge(version: version)
+                if let description {
+                    Text(description).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
+            #else
             HStack(spacing: 10) {
                 Text(version.name).scaledFont(.title2.weight(.semibold))
                 VersionStateBadge(version: version)
             }
-            if let description = nonEmpty(version.description) ?? highlights?.description {
+            if let description {
                 Text(description).foregroundStyle(.secondary).textSelection(.enabled)
             }
+            #endif
             // Side by side where they fit, stacked on a narrow iPhone.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 20) { versionDates }
@@ -305,14 +359,26 @@ struct VersionDetailView: View {
                         emptyFilteredView.allowsHitTesting(false)
                     }
                 }
-                Divider()
-                IssueListFooter(query: query) {
-                    Task {
-                        if let client = session.client { await query.loadMore(using: client) }
+                if showsFooter {
+                    Divider()
+                    IssueListFooter(query: query) {
+                        Task {
+                            if let client = session.client { await query.loadMore(using: client) }
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// On iPhone and iPad only while there's more to load: the count alone
+    /// isn't worth a row there.
+    private var showsFooter: Bool {
+        #if os(iOS)
+        query.hasMore
+        #else
+        true
+        #endif
     }
 
     @ViewBuilder
@@ -392,3 +458,14 @@ struct VersionDetailView: View {
         return clauses.joined(separator: " AND ") + " ORDER BY status ASC, priority DESC, updated DESC"
     }
 }
+
+#if os(iOS)
+private extension View {
+    /// On screen, or kept in place unseen and out of reach.
+    func shown(_ isShown: Bool) -> some View {
+        opacity(isShown ? 1 : 0)
+            .allowsHitTesting(isShown)
+            .accessibilityHidden(!isShown)
+    }
+}
+#endif
