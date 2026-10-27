@@ -38,6 +38,8 @@ enum IssueCursorPrompts {
             return """
             You are debugging Jira bug \(ticketKey). This workspace contains all related repositories for our product, including both application/code repositories and ClickHouse database schema/migration repositories. Treat these as parts of the same system and search across them as needed.
 
+            **Present a plan first. Do not implement yet.** Do not edit code, create commits, or write files until the user explicitly approves your plan. Investigation is read-only until then.
+
             Ticket details
 
             \(ticketDetails)
@@ -51,6 +53,8 @@ enum IssueCursorPrompts {
             5. If information is missing, state assumptions and what you would ask the reporter.
 
             Be systematic: read the ticket first, then investigate. Search all relevant repos before concluding the issue is isolated to one. Prefer small, targeted changes and clearly distinguish confirmed findings from assumptions.
+
+            Write the plan in this chat as your reply, and wait for explicit user approval before implementing the fix or adding any files.
             """
         case .featurePlanning:
             return """

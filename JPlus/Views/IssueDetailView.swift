@@ -969,7 +969,7 @@ private struct IssueCursorPromptButton: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .help("Copy a prompt for Cursor (paste into chat)")
+            .help("Copy a prompt for an AI agent (paste into chat)")
         }
     }
 }
