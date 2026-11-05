@@ -144,6 +144,9 @@ struct EditableSummary: View {
                 .opacity(isHovered ? 1 : 0)
                 .help("Edit title")
             }
+            // Without this the gap between the title and the pencil isn't
+            // hoverable, so the pencil vanishes on the way to it.
+            .contentShape(Rectangle())
             .onHover { isHovered = $0 }
         }
     }
