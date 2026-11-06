@@ -503,6 +503,7 @@ struct PriorityPane<Content: View>: View {
                 DispatchQueue.main.async { proxy.scrollTo(revealID, anchor: .center) }
             }
             .environment(drafts)
+            .modifier(PriorityPhotoPickers(model: model, drafts: drafts))
             .lockedWhileSaving(model.saving != nil)
             .overlay(alignment: .bottom) {
                 ZStack {
@@ -597,17 +598,22 @@ struct PriorityItemList: View {
                     .scaledFont(.callout)
                     .foregroundStyle(.secondary)
             } else {
+                let photos = day.photos
                 VStack(alignment: .leading, spacing: Self.rowSpacing) {
                     ForEach(day.items) { item in
                         let spot = NewItemSpot(pageID: day.pageID, afterID: item.id)
                         let hasComments = model.hasComments(item, in: day)
+                        let uploads = model.photoUploads[item.id] ?? []
                         PriorityItemRow(
                             item: item,
                             day: day,
                             threads: model.threads(on: item, in: day),
                             hasComments: hasComments,
                             canMoveToToday: model.todayRef.map { $0.pageID != day.pageID } ?? false,
-                            isBusy: model.busyItemIDs.contains(item.id),
+                            photos: photos[item.id] ?? [],
+                            uploads: uploads,
+                            canAddPhotos: day.document.canAddPhotos(toItem: item.id),
+                            isBusy: model.busyItemIDs.contains(item.id) || !uploads.isEmpty,
                             highlight: highlight,
                             isRevealed: item.id == revealedItemID,
                             model: model,
@@ -937,6 +943,8 @@ private struct PrioritySavingBar: View {
         case .adding: "Adding"
         case .deleting: "Deleting"
         case .moving: "Moving to Today"
+        case .addingPhoto: "Adding Photo to"
+        case .removingPhoto: "Removing Photo from"
         }
     }
 
@@ -987,6 +995,22 @@ final class PriorityDrafts {
     var composing: [String: CommentSpot] = [:]
     /// What's typed in each comment box, by the box's id.
     var comments: [String: String] = [:]
+    /// The item photos are being picked for, while a picker is open.
+    var photoPick: PriorityPhotoPick?
+    /// A photo's file, open in Quick Look.
+    var previewURL: URL?
+}
+
+/// Photos being picked for an item: from files, or on iOS from the photo
+/// library or the camera.
+struct PriorityPhotoPick: Equatable {
+    enum Source: Equatable {
+        case files, library, camera
+    }
+
+    let item: PriorityItem
+    let day: PriorityDay
+    let source: Source
 }
 
 /// One checkbox line, edited as in Reminders: a click or tap edits it (one
@@ -1007,6 +1031,11 @@ private struct PriorityItemRow: View {
     let hasComments: Bool
     /// Today has a page and this item is on another day.
     let canMoveToToday: Bool
+    /// Its photos, from the page, and those still uploading.
+    let photos: [PriorityPhoto]
+    let uploads: [PriorityPhotoUpload]
+    /// It can have photos added: it isn't indented, nor has items indented under it.
+    let canAddPhotos: Bool
     let isBusy: Bool
     /// The search whose matches are highlighted in its text, if any.
     let highlight: PrioritySearch?
@@ -1030,6 +1059,8 @@ private struct PriorityItemRow: View {
     @Environment(\.openURL) private var openURL
     /// The current click landed on a link, so it opens that instead of editing.
     @State private var clickedLink = false
+    /// Images are being dragged over it, to drop under it as photos.
+    @State private var isDropTargeted = false
     #if os(macOS)
     /// Where in the text the click that started editing landed, for the caret.
     @State private var editClick: CGPoint?
@@ -1055,7 +1086,8 @@ private struct PriorityItemRow: View {
             Divider()
                 .padding(.leading, Self.checkWidth + 12)
         }
-        .background(isRevealed ? Color.accentColor.opacity(0.12) : .clear)
+        .background(isRevealed || isDropTargeted ? Color.accentColor.opacity(0.12) : .clear)
+        .onDrop(of: ScreenshotImport.acceptedTypes, isTargeted: $isDropTargeted, perform: dropPhotos)
         .modifier(SwipeToRevealActions(
             isOpen: Binding(
                 get: { swipedOpenID == item.id },
@@ -1074,6 +1106,7 @@ private struct PriorityItemRow: View {
             .background(rowFill, in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
             .contextMenu { menu }
+            .onDrop(of: ScreenshotImport.acceptedTypes, isTargeted: $isDropTargeted, perform: dropPhotos)
             .onHover { isHovered = $0 }
             // A right-click opens the menu under the pointer, so on this row
             // when it's hovered; it stays highlighted until that menu closes.
@@ -1093,7 +1126,7 @@ private struct PriorityItemRow: View {
     /// Tinted when it's the search result picked; otherwise lit under the
     /// pointer and while its menu is open.
     private var rowFill: Color {
-        if isRevealed { return Color.accentColor.opacity(0.14) }
+        if isRevealed || isDropTargeted { return Color.accentColor.opacity(0.14) }
         return isHovered || openMenu != nil ? Color.primary.opacity(0.06) : .clear
     }
     #endif
@@ -1127,6 +1160,12 @@ private struct PriorityItemRow: View {
                     ProgressView().controlSize(.mini)
                 }
             }
+            if !photos.isEmpty || !uploads.isEmpty {
+                PriorityPhotoStrip(photos: photos, uploads: uploads, item: item, day: day, model: model, canRemove: !isBusy)
+                    // Faded with a finished item, as its text is.
+                    .opacity(item.isDone ? 0.5 : 1)
+                    .padding(.leading, Self.checkWidth + Self.lineSpacing)
+            }
             if !threads.isEmpty || composing == .newThread {
                 PriorityComments(threads: threads, item: item, day: day, model: model,
                                  composing: Binding(get: { composing }, set: { setComposing($0) }), focusing: openedBox)
@@ -1144,6 +1183,10 @@ private struct PriorityItemRow: View {
         Button("Edit", systemImage: "pencil", action: beginEdit)
             .disabled(hasComments || composing == .newThread)
         addCommentButton
+        Button("Add Photo…", systemImage: "photo.badge.plus") { pickPhotos(from: .files) }
+            .disabled(!canAddPhotos || isBusy)
+        Button("Paste Photo", systemImage: "doc.on.clipboard", action: pastePhoto)
+            .disabled(!canAddPhotos || isBusy)
         if canMoveToToday {
             moveToTodayButton
         }
@@ -1154,6 +1197,15 @@ private struct PriorityItemRow: View {
         Button("Edit…", systemImage: "pencil", action: beginEdit)
             .disabled(hasComments || composing == .newThread)
         addCommentButton
+        Menu("Add Photo", systemImage: "photo.badge.plus") {
+            Button("Photo Library", systemImage: "photo.on.rectangle") { pickPhotos(from: .library) }
+            if PriorityCameraPicker.isAvailable {
+                Button("Take Photo", systemImage: "camera") { pickPhotos(from: .camera) }
+            }
+            Button("Choose File", systemImage: "folder") { pickPhotos(from: .files) }
+            Button("Paste", systemImage: "doc.on.clipboard", action: pastePhoto)
+        }
+        .disabled(!canAddPhotos || isBusy)
         Button(item.isDone ? "Mark Not Done" : "Mark Done", systemImage: item.isDone ? Self.openSymbol : Self.doneSymbol) {
             model.setDone(!item.isDone, item: item, in: day)
         }
@@ -1302,6 +1354,32 @@ private struct PriorityItemRow: View {
         highlight.map { $0.highlighting(text) } ?? text
     }
 
+    /// Opens a picker for photos to put under it.
+    private func pickPhotos(from source: PriorityPhotoPick.Source) {
+        drafts.photoPick = PriorityPhotoPick(item: item, day: day, source: source)
+    }
+
+    /// Puts the image on the clipboard under it.
+    private func pastePhoto() {
+        guard let shot = ScreenshotImport.loadFromPasteboard() else {
+            return model.reportPhotoProblem("The clipboard doesn't have an image.")
+        }
+        Task { await model.addPhotos([(shot.data, shot.filename)], to: item, in: day) }
+    }
+
+    /// Puts images dropped on it under it, when it can have photos.
+    private func dropPhotos(_ providers: [NSItemProvider]) -> Bool {
+        guard canAddPhotos, !isBusy else { return false }
+        Task {
+            var images: [(data: Data, filename: String)] = []
+            for provider in providers {
+                if let shot = await ScreenshotImport.load(from: [provider]) { images.append((shot.data, shot.filename)) }
+            }
+            await model.addPhotos(images, skipped: providers.count - images.count, to: item, in: day)
+        }
+        return true
+    }
+
     private func beginEdit() {
         // New text would drop the highlight its comments hang on, or the
         // one a comment being typed will.
@@ -1390,6 +1468,7 @@ extension PriorityItemRow: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.item == b.item && a.day.pageID == b.day.pageID && a.threads == b.threads && a.hasComments == b.hasComments
             && a.canMoveToToday == b.canMoveToToday && a.isBusy == b.isBusy
+            && a.photos == b.photos && a.uploads == b.uploads && a.canAddPhotos == b.canAddPhotos
             && a.highlight == b.highlight && a.isRevealed == b.isRevealed
     }
 }

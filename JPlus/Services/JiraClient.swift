@@ -436,20 +436,42 @@ struct JiraClient: Sendable {
     /// Uploads one attachment to an issue.
     @discardableResult
     func attach(_ data: Data, filename: String, mimeType: String, to issueKey: String) async throws -> [JiraAttachment] {
+        try await upload(data, filename: filename, mimeType: mimeType, to: "/rest/api/3/issue/\(issueKey)/attachments", xsrfToken: "no-check")
+    }
+
+    /// Posts one file as `multipart/form-data`, its part named `file`, with
+    /// any other `fields` before it. Atlassian refuses uploads without the
+    /// XSRF header: Jira documents `no-check` for it, Confluence `nocheck`.
+    func upload<T: Decodable>(_ data: Data, filename: String, mimeType: String, to path: String, xsrfToken: String, fields: [String: String] = [:]) async throws -> T {
         let boundary = "JPlus-\(UUID().uuidString)"
         var body = Data()
+        for (name, value) in fields.sorted(by: { $0.key < $1.key }) {
+            body.append("--\(boundary)\r\n")
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
+            body.append("\(value)\r\n")
+        }
         body.append("--\(boundary)\r\n")
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename.replacingOccurrences(of: "\"", with: "_"))\"\r\n")
         body.append("Content-Type: \(mimeType)\r\n\r\n")
         body.append(data)
         body.append("\r\n--\(boundary)--\r\n")
 
-        var request = makeRequest(path: "/rest/api/3/issue/\(issueKey)/attachments", method: "POST")
+        var request = makeRequest(path: path, method: "POST")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.setValue("no-check", forHTTPHeaderField: "X-Atlassian-Token")
+        request.setValue(xsrfToken, forHTTPHeaderField: "X-Atlassian-Token")
         request.httpBody = body
         request.timeoutInterval = 120
         return try await send(request)
+    }
+
+    /// The bytes behind a link on this site, such as a Confluence
+    /// attachment's `downloadLink` (`/wiki/download/attachments/…?version=1`).
+    func siteData(at link: String, timeout: TimeInterval = 120) async throws -> Data {
+        guard let parsed = URLComponents(string: link) else { throw JiraError.invalidResponse }
+        var request = makeRequest(path: parsed.path, query: parsed.queryItems ?? [], method: "GET")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = timeout
+        return try await sendData(request)
     }
 
     /// The site's cloud id, needed to build ARIs for the GraphQL gateway.

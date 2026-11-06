@@ -282,6 +282,24 @@ nonisolated final class DemoServer: @unchecked Sendable {
             if let value = (json["body"] as? [String: Any])?["value"] as? String { state.pages[index].body = value }
             return ok(pageJSON(state.pages[index]))
         }
+        if let p = match(method, parts, "GET wiki/api/v2/pages/*/attachments") {
+            let id = p[0]
+            return ok(["results": state.pageAttachments.filter { $0.pageID == id }.map(pageAttachmentJSON), "_links": [:]])
+        }
+        if let p = match(method, parts, "GET wiki/api/v2/attachments/*") {
+            let id = p[0]
+            guard let attachment = state.pageAttachments.first(where: { $0.id == id }) else { return error(404, "Attachment not found.") }
+            return ok(pageAttachmentJSON(attachment))
+        }
+        if let p = match(method, parts, "POST wiki/rest/api/content/*/child/attachment") {
+            return attachToPage(body, contentType: contentType, pageID: p[0])
+        }
+        if let p = match(method, parts, "GET wiki/download/attachments/*/*") {
+            guard let attachment = state.pageAttachments.first(where: { $0.pageID == p[0] && $0.filename == p[1] }) else {
+                return error(404, "Attachment not found.")
+            }
+            return Response(data: attachment.data, contentType: attachment.mimeType)
+        }
         if match(method, parts, "POST wiki/rest/api/content/archive") != nil {
             // Archived at once; the job it reports has always finished.
             let ids = ((json["pages"] as? [[String: Any]]) ?? []).compactMap { ($0["id"] as? Int).map(String.init) ?? $0["id"] as? String }
@@ -387,18 +405,58 @@ nonisolated final class DemoServer: @unchecked Sendable {
     }
 
     private func attach(_ body: Data, contentType: String, to key: String) -> Response {
+        guard let file = uploadedFile(body, contentType: contentType) else { return error(400, "Bad upload.") }
+        let attachment = DemoAttachment(id: newID(), filename: file.filename, mimeType: file.mimeType, created: Date(), data: file.data)
+        let result = edit(key) { $0.attachments.append(attachment) }
+        guard result.status == 204 else { return result }
+        return ok([["id": attachment.id, "filename": file.filename, "size": file.data.count, "mimeType": file.mimeType]])
+    }
+
+    /// The part named `file` of a multipart upload, after any other fields.
+    private func uploadedFile(_ body: Data, contentType: String) -> (filename: String, mimeType: String, data: Data)? {
         guard let boundary = contentType.components(separatedBy: "boundary=").last, !boundary.isEmpty,
-              let headerEnd = body.range(of: Data("\r\n\r\n".utf8)) else { return error(400, "Bad upload.") }
-        let header = String(decoding: body[..<headerEnd.lowerBound], as: UTF8.self)
+              let disposition = body.range(of: Data("name=\"file\"".utf8)),
+              let headerEnd = body.range(of: Data("\r\n\r\n".utf8), in: disposition.upperBound..<body.endIndex) else { return nil }
+        let header = String(decoding: body[disposition.lowerBound..<headerEnd.lowerBound], as: UTF8.self)
         let filename = header.firstMatch(of: /filename="([^"]*)"/).map { String($0.1) } ?? "file"
         let mimeType = header.firstMatch(of: /Content-Type: ([^\r\n]+)/).map { String($0.1) } ?? "application/octet-stream"
         let closing = Data("\r\n--\(boundary)".utf8)
         let end = body.range(of: closing, in: headerEnd.upperBound..<body.endIndex)?.lowerBound ?? body.endIndex
-        let data = body[headerEnd.upperBound..<end]
-        let attachment = DemoAttachment(id: newID(), filename: filename, mimeType: mimeType, created: Date(), data: Data(data))
-        let result = edit(key) { $0.attachments.append(attachment) }
-        guard result.status == 204 else { return result }
-        return ok([["id": attachment.id, "filename": filename, "size": data.count, "mimeType": mimeType]])
+        return (filename, mimeType, Data(body[headerEnd.upperBound..<end]))
+    }
+
+    /// Attaches a file to a page, answering as Confluence's v1 API does,
+    /// which refuses a name the page already has.
+    private func attachToPage(_ body: Data, contentType: String, pageID: String) -> Response {
+        guard state.pages.contains(where: { $0.id == pageID }) else { return error(404, "Page not found.") }
+        guard let file = uploadedFile(body, contentType: contentType) else { return error(400, "Bad upload.") }
+        if state.pageAttachments.contains(where: { $0.pageID == pageID && $0.filename == file.filename }) {
+            return ok(["statusCode": 400, "message": "Cannot add a new attachment with same file name as an existing attachment: \(file.filename)"], status: 400)
+        }
+        let attachment = DemoPageAttachment(id: "att" + newID(), pageID: pageID, fileID: UUID().uuidString.lowercased(),
+                                            filename: file.filename, mimeType: file.mimeType, data: file.data)
+        state.pageAttachments.append(attachment)
+        return ok(["results": [[
+            "id": attachment.id, "type": "attachment", "status": "current", "title": attachment.filename,
+            "extensions": ["mediaType": attachment.mimeType, "fileSize": attachment.data.count,
+                           "fileId": attachment.fileID, "collectionName": "contentId-\(pageID)"],
+            "_links": ["download": downloadLink(attachment)],
+        ]], "size": 1])
+    }
+
+    private func downloadLink(_ attachment: DemoPageAttachment) -> String {
+        let name = attachment.filename.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? attachment.filename
+        return "/download/attachments/\(attachment.pageID)/\(name)?version=1&api=v2"
+    }
+
+    /// An attachment as Confluence's v2 API shows it.
+    private func pageAttachmentJSON(_ attachment: DemoPageAttachment) -> [String: Any] {
+        [
+            "id": attachment.id, "status": "current", "title": attachment.filename, "pageId": attachment.pageID,
+            "mediaType": attachment.mimeType, "fileId": attachment.fileID, "fileSize": attachment.data.count,
+            "downloadLink": downloadLink(attachment),
+            "_links": ["download": downloadLink(attachment)],
+        ]
     }
 
     private func newID() -> String {

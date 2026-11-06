@@ -117,6 +117,54 @@ extension JiraClient {
         ])
     }
 
+    /// The files attached to a page. A day's photos are a handful, so one
+    /// page of 250 holds them.
+    func confluenceAttachments(pageID: String) async throws -> [ConfluenceAttachment] {
+        struct Page: Decodable { let results: [ConfluenceAttachment] }
+        let page: Page = try await get("/wiki/api/v2/pages/\(pageID)/attachments", query: [
+            URLQueryItem(name: "limit", value: "250"),
+        ])
+        return page.results
+    }
+
+    func confluenceAttachment(id: String) async throws -> ConfluenceAttachment {
+        try await get("/wiki/api/v2/attachments/\(id)")
+    }
+
+    /// Attaches a file to a page, as a minor edit so watchers aren't told.
+    /// The v2 API can't upload, so this is v1's, which refuses a file name
+    /// the page already has (a new version of it would be a PUT). The page
+    /// body is left alone; showing the file there is up to the caller.
+    func attachToConfluencePage(_ data: Data, filename: String, mimeType: String, pageID: String) async throws -> ConfluenceAttachment {
+        struct Uploaded: Decodable {
+            let results: [Result]
+            struct Result: Decodable {
+                let id: String
+                let title: String
+                let extensions: Extensions?
+                let _links: Links?
+            }
+            struct Extensions: Decodable {
+                let mediaType: String?
+                let fileSize: Int?
+                let fileId: String?
+            }
+            struct Links: Decodable { let download: String? }
+        }
+        let uploaded: Uploaded = try await upload(data, filename: filename, mimeType: mimeType,
+                                                  to: "/wiki/rest/api/content/\(pageID)/child/attachment",
+                                                  xsrfToken: "nocheck", fields: ["minorEdit": "true"])
+        guard let result = uploaded.results.first else { throw JiraError.invalidResponse }
+        // The media file id is what the page body points at. When v1 doesn't
+        // say it, v2 does.
+        if let fileID = result.extensions?.fileId {
+            return ConfluenceAttachment(id: result.id, title: result.title, mediaType: result.extensions?.mediaType ?? mimeType,
+                                        fileId: fileID, fileSize: result.extensions?.fileSize ?? data.count,
+                                        downloadLink: result._links?.download, pageId: pageID)
+        }
+        return try await confluenceAttachment(id: result.id)
+    }
+
     func createConfluenceFolder(title: String, spaceID: String, parentID: String) async throws -> ConfluenceFolder {
         try await post("/wiki/api/v2/folders", json: [
             "spaceId": spaceID,

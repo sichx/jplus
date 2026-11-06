@@ -144,6 +144,19 @@ nonisolated struct DemoState: @unchecked Sendable {
     var pages: [DemoPage]
     var pageComments: [DemoPageComment]
     var nextID: Int = 50_000
+    /// Files attached to Confluence pages, such as priorities' photos.
+    var pageAttachments: [DemoPageAttachment] = []
+}
+
+/// A file attached to a Confluence page. Pages show it through a `media`
+/// node naming its `fileID`.
+nonisolated struct DemoPageAttachment: Sendable {
+    let id: String
+    let pageID: String
+    let fileID: String
+    let filename: String
+    let mimeType: String
+    let data: Data
 }
 
 // MARK: - ADF

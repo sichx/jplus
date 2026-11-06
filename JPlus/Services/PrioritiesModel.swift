@@ -46,6 +46,13 @@ final class PrioritiesModel {
     private var searchLoadedAt: ContinuousClock.Instant?
     /// How long what search read is used before it's read again.
     private static let searchFreshness: Duration = .seconds(60)
+    /// Photos uploading under each item, by item id, shown from the picked
+    /// images until the page has them.
+    private(set) var photoUploads: [String: [PriorityPhotoUpload]] = [:]
+    /// Each page's attachments as last listed, by page id, to find the file
+    /// a photo on it shows.
+    @ObservationIgnored private var attachmentLists: [String: [ConfluenceAttachment]] = [:]
+    @ObservationIgnored private var attachmentLoads: [String: Task<[ConfluenceAttachment], Error>] = [:]
 
     private var client: JiraClient?
     private var folderID = ""
@@ -422,10 +429,17 @@ final class PrioritiesModel {
         errorMessage = nil
         do {
             var items: [ADFNode] = []
+            /// Copied items' photos, by the copy's id, to attach to the new page once it's made.
+            var photoCopies: [(itemID: String, photos: [PriorityPhoto])] = []
             if let source {
                 let page = try await client.confluencePage(id: source.pageID)
+                let photos = page.document.photosByItem
                 // The comments stay on the source page, so their highlights don't come along.
-                items = page.document.taskItems.filter { !$0.isDone }.map { ADFNode.taskItem($0.contentWithoutComments) }
+                for item in page.document.taskItems where !item.isDone {
+                    let copy = ADFNode.taskItem(item.contentWithoutComments)
+                    items.append(copy)
+                    if let photos = photos[item.id], let id = copy.attr("localId") { photoCopies.append((id, photos)) }
+                }
             }
 
             let monthTitle = PriorityNaming.monthTitle(for: date)
@@ -452,12 +466,30 @@ final class PrioritiesModel {
 
             let document = ADFNode(type: "doc", content: items.isEmpty ? [] : [ADFNode.taskList(items)])
             let created = try await client.createConfluencePage(title: title, spaceID: spaceID, parentID: monthID, document: document)
+            // The photos' files are attached to the new page too, and shown
+            // under their items there. The day is made either way.
+            var photoNote: String?
+            if let source, !photoCopies.isEmpty {
+                do {
+                    var withPhotos = document
+                    for copy in photoCopies {
+                        var blocks: [ADFNode] = []
+                        for photo in copy.photos { blocks.append(try await self.copy(photo, fromPage: source.pageID, toPage: created.id)) }
+                        withPhotos = withPhotos.insertingPhotos(blocks, underItem: copy.itemID) ?? withPhotos
+                    }
+                    _ = try await client.updateConfluencePage(id: created.id, title: title, version: created.version.number + 1,
+                                                              document: withPhotos, message: "Photos from \(source.title)")
+                } catch {
+                    photoNote = "\(title) was made, but the photos didn't all copy from \(source.title): \(error.localizedDescription)"
+                }
+            }
             // Read it back so the page has its links and normalized body.
             let page = (try? await client.confluencePage(id: created.id)) ?? created
             insert(PriorityDayRef(pageID: page.id, title: title, day: date, monthFolderID: monthID))
             pages[page.id] = PriorityDay(page: page, day: date, siteURL: client.credentials.siteURL)
             commentThreads[page.id] = []
             shownIDs = [page.id]
+            if let photoNote { errorMessage = photoNote }
             return true
         } catch {
             errorMessage = "Couldn't create \(title): \(error.localizedDescription)"
@@ -564,10 +596,12 @@ final class PrioritiesModel {
         remove(item, from: day, showing: PrioritySave(change: .deleting, text: item.plainText, isDone: item.isDone))
     }
 
+    /// Takes its photos off the page with it. Their files stay attached to
+    /// the page, as deleting an image in Confluence's editor leaves them.
     @discardableResult
     private func remove(_ item: PriorityItem, from day: PriorityDay, showing save: PrioritySave?) -> Task<Bool, Never>? {
         write(page: day.pageID, itemID: item.id, message: "Removed: \(item.plainText.prefix(60))", showing: save) { document in
-            document.replacingTaskItems { current, node in current.id == item.id ? nil : node }
+            document.removingPhotos(ofItem: item.id).replacingTaskItems { current, node in current.id == item.id ? nil : node }
         }
     }
 
@@ -590,7 +624,8 @@ final class PrioritiesModel {
     }
 
     /// Moves an item from an earlier day onto today's page, when today has
-    /// one. Not one with comments, which can't move with it.
+    /// one. Not one with comments, which can't move with it. Its photos'
+    /// files are attached to today's page too, so they show there.
     func moveToToday(_ item: PriorityItem, from day: PriorityDay) async {
         guard let today = todayRef, today.pageID != day.pageID, !hasComments(item, in: day) else { return }
         // One change on screen across both pages' saves, so the screen stays
@@ -598,11 +633,214 @@ final class PrioritiesModel {
         let moveID = UUID()
         saveQueue.append((moveID, PrioritySave(change: .moving, text: item.plainText, isDone: item.isDone)))
         defer { saveQueue.removeAll { $0.id == moveID } }
+        var photoBlocks: [ADFNode] = []
+        for photo in (pages[day.pageID] ?? day).photos[item.id] ?? [] {
+            do {
+                photoBlocks.append(try await copy(photo, fromPage: day.pageID, toPage: today.pageID))
+            } catch {
+                errorMessage = "Couldn't move “\(item.plainText.prefix(60))” to today: its photo didn't copy. \(error.localizedDescription)"
+                return
+            }
+        }
         let moved = ADFNode.taskItem(item.contentWithoutComments, done: item.isDone, id: item.id)
-        let added = write(page: today.pageID, itemID: item.id, message: "Moved from \(day.title): \(item.plainText.prefix(50))", showing: nil) { $0.appendingTaskItem([moved]) }
+        let added = write(page: today.pageID, itemID: item.id, message: "Moved from \(day.title): \(item.plainText.prefix(50))", showing: nil) { document in
+            let added = document.appendingTaskItem([moved])
+            return photoBlocks.isEmpty ? added : added.insertingPhotos(photoBlocks, underItem: item.id) ?? added
+        }
         // Only off its own day once it's on today's, so a failed save can't lose it.
         guard await added?.value == true else { return }
         _ = await remove(item, from: day, showing: nil)?.value
+    }
+
+    // MARK: - Photos
+
+    /// Attaches images to an item's page and puts them under the item, each
+    /// shown from the picked image while it uploads. HEIC and the like go
+    /// up as JPEG, so every browser shows them. Images that can't be read
+    /// are left out, with a note.
+    /// `skipped` counts what was picked but couldn't be read as an image.
+    func addPhotos(_ images: [(data: Data, filename: String)], skipped: Int = 0, to item: PriorityItem, in day: PriorityDay) async {
+        guard client != nil, !images.isEmpty || skipped > 0 else { return }
+        guard (pages[day.pageID] ?? day).document.canAddPhotos(toItem: item.id) else {
+            errorMessage = PriorityPhotoError.cantAdd.localizedDescription
+            return
+        }
+        var prepared: [(photo: PreparedPhoto, uploadID: UUID)] = []
+        var unreadable = skipped
+        for image in images {
+            guard let photo = await PhotoImaging.prepare(image.data, filename: image.filename) else {
+                unreadable += 1
+                continue
+            }
+            let upload = PriorityPhotoUpload(id: UUID(), filename: photo.filename, preview: photo.preview,
+                                             pixelWidth: photo.pixelWidth, pixelHeight: photo.pixelHeight)
+            photoUploads[item.id, default: []].append(upload)
+            prepared.append((photo, upload.id))
+        }
+        let uploadIDs = Set(prepared.map(\.uploadID))
+        func clearUploads() {
+            photoUploads[item.id]?.removeAll { uploadIDs.contains($0.id) }
+            if photoUploads[item.id]?.isEmpty == true { photoUploads[item.id] = nil }
+        }
+
+        var blocks: [ADFNode] = []
+        var failure: Error?
+        for entry in prepared {
+            do {
+                blocks.append(try await upload(entry.photo, toPage: day.pageID))
+            } catch {
+                failure = error
+                break
+            }
+        }
+        var note: String?
+        if let failure {
+            note = "Couldn't attach the photo to the page: \(failure.localizedDescription)"
+        } else if unreadable > 0 {
+            note = switch (unreadable, blocks.count) {
+            case (1, 0): "That isn't an image the app can read."
+            case (_, 0): "Those aren't images the app can read."
+            case (1, _): "One of those isn't an image the app can read, so it was left out."
+            default: "\(unreadable) of those aren't images the app can read, so they were left out."
+            }
+        }
+
+        if !blocks.isEmpty {
+            // Deleted, or indented, while it uploaded.
+            guard pages[day.pageID]?.document.canAddPhotos(toItem: item.id) == true else {
+                clearUploads()
+                errorMessage = "The photo was attached to the page in Confluence, but the priority changed before it could go under it."
+                return
+            }
+            let label = blocks.count == 1 ? "a photo" : "\(blocks.count) photos"
+            let saved = write(page: day.pageID, itemID: item.id, message: "Added \(label): \(item.plainText.prefix(50))",
+                              showing: PrioritySave(change: .addingPhoto, text: item.plainText, isDone: item.isDone)) { document in
+                document.insertingPhotos(blocks, underItem: item.id) ?? document
+            }
+            // The page shows them now, so the stand-ins can go.
+            clearUploads()
+            // A save that works clears the message, so a note waits for it.
+            guard await saved?.value == true else { return }
+        } else {
+            clearUploads()
+        }
+        if let note { errorMessage = note }
+    }
+
+    /// Says why photos couldn't be added, where load and save errors show.
+    func reportPhotoProblem(_ message: String) {
+        errorMessage = message
+    }
+
+    /// Takes a photo off the page. Its file stays attached to the page, as
+    /// deleting an image in Confluence's editor leaves it.
+    func removePhoto(_ photo: PriorityPhoto, from item: PriorityItem, in day: PriorityDay) {
+        write(page: day.pageID, itemID: item.id, message: "Removed a photo: \(item.plainText.prefix(50))",
+              showing: PrioritySave(change: .removingPhoto, text: item.plainText, isDone: item.isDone)) { document in
+            document.removingPhoto(photo.fileID, ofItem: item.id)
+        }
+    }
+
+    /// A small copy of a photo, for showing under its priority.
+    func preview(of photo: PriorityPhoto, onPage pageID: String, maxPixels: Int) async throws -> PlatformImage {
+        guard let client else { throw CancellationError() }
+        let attachment = try await attachment(for: photo, onPage: pageID)
+        return try await PriorityPhotoStore.shared.preview(for: attachment, using: client, maxPixels: maxPixels)
+    }
+
+    /// A photo's file, downloaded, to open in Quick Look.
+    func file(of photo: PriorityPhoto, onPage pageID: String) async throws -> URL {
+        guard let client else { throw CancellationError() }
+        let attachment = try await attachment(for: photo, onPage: pageID)
+        return try await PriorityPhotoStore.shared.file(for: attachment, using: client)
+    }
+
+    /// The attachment a photo shows: on the page its collection names (one
+    /// copied in from another page in Confluence still points there), else
+    /// the page it's on. Matched by file id, or failing that by name, which
+    /// Confluence's editor writes as the alt text. A page's attachments are
+    /// listed once, and again when one isn't among them, as it may be new.
+    private func attachment(for photo: PriorityPhoto, onPage pageID: String) async throws -> ConfluenceAttachment {
+        let owner = photo.pageID ?? pageID
+        func find(_ list: [ConfluenceAttachment]) -> ConfluenceAttachment? {
+            list.first { $0.fileId == photo.fileID } ?? photo.filename.flatMap { name in list.first { $0.title == name } }
+        }
+        if let list = attachmentLists[owner], let found = find(list) { return found }
+        guard let found = find(try await listAttachments(owner)) else { throw PriorityPhotoError.notFound }
+        return found
+    }
+
+    /// Lists a page's attachments, once at a time however many photos ask.
+    private func listAttachments(_ pageID: String) async throws -> [ConfluenceAttachment] {
+        guard let client else { throw CancellationError() }
+        if let load = attachmentLoads[pageID] { return try await load.value }
+        let load = Task { try await client.confluenceAttachments(pageID: pageID) }
+        attachmentLoads[pageID] = load
+        defer { attachmentLoads[pageID] = nil }
+        let list = try await load.value
+        attachmentLists[pageID] = list
+        return list
+    }
+
+    /// Attaches a prepared photo to a page and returns the image block that
+    /// shows it. Its bytes are kept, so it shows without downloading.
+    private func upload(_ photo: PreparedPhoto, toPage pageID: String) async throws -> ADFNode {
+        let attachment = try await attach(photo.data, filename: photo.filename, mimeType: photo.mimeType, toPage: pageID)
+        guard let fileID = attachment.fileId else { throw JiraError.invalidResponse }
+        return PriorityPhoto.block(fileID: fileID, pageID: pageID, filename: attachment.title,
+                                   pixelWidth: photo.pixelWidth, pixelHeight: photo.pixelHeight)
+    }
+
+    /// Attaches a photo's file to another page too, and returns the image
+    /// block showing it there as it showed on its own page.
+    private func copy(_ photo: PriorityPhoto, fromPage sourceID: String, toPage pageID: String) async throws -> ADFNode {
+        guard let client else { throw CancellationError() }
+        let source = try await attachment(for: photo, onPage: sourceID)
+        let file = try await PriorityPhotoStore.shared.file(for: source, using: client)
+        let data = try Data(contentsOf: file)
+        let attachment = try await attach(data, filename: source.title, mimeType: source.mediaType ?? "application/octet-stream", toPage: pageID)
+        guard let fileID = attachment.fileId else { throw JiraError.invalidResponse }
+        var width = photo.pixelWidth
+        var height = photo.pixelHeight
+        if width == nil || height == nil, let prepared = await PhotoImaging.prepare(data, filename: source.title) {
+            width = prepared.pixelWidth
+            height = prepared.pixelHeight
+        }
+        return PriorityPhoto.block(fileID: fileID, pageID: pageID, filename: attachment.title,
+                                   pixelWidth: width ?? 1, pixelHeight: height ?? 1, shownWidth: photo.displayWidth)
+    }
+
+    /// Attaches a file to a page under a name the page doesn't have yet
+    /// ("photo 2.jpg" after "photo.jpg"), since Confluence refuses a second
+    /// file by the same name, and notes it among the page's attachments.
+    private func attach(_ data: Data, filename: String, mimeType: String, toPage pageID: String) async throws -> ConfluenceAttachment {
+        guard let client else { throw CancellationError() }
+        var taken = Set((try? await listAttachments(pageID))?.map(\.title) ?? [])
+        var name = Self.freeName(filename, taken: taken)
+        let attachment: ConfluenceAttachment
+        do {
+            attachment = try await client.attachToConfluencePage(data, filename: name, mimeType: mimeType, pageID: pageID)
+        } catch JiraError.http(400, _) {
+            // Someone attached one by that name since the list was read.
+            taken.insert(name)
+            name = Self.freeName(filename, taken: taken.union((try? await listAttachments(pageID))?.map(\.title) ?? []))
+            attachment = try await client.attachToConfluencePage(data, filename: name, mimeType: mimeType, pageID: pageID)
+        }
+        attachmentLists[pageID, default: []].append(attachment)
+        await PriorityPhotoStore.shared.keep(data, for: attachment, site: client.credentials.siteHost)
+        return attachment
+    }
+
+    /// `name` when it isn't taken, or else it numbered: "photo 2.jpg", "photo 3.jpg", …
+    static func freeName(_ name: String, taken: Set<String>) -> String {
+        guard taken.contains(name) else { return name }
+        let base = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        for number in 2... {
+            let candidate = ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)"
+            if !taken.contains(candidate) { return candidate }
+        }
+        return name
     }
 
     /// Shows a change to a page at once and queues it: fetch, transform, save;

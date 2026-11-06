@@ -78,12 +78,105 @@ nonisolated struct PriorityItem: Identifiable, Hashable, Sendable {
 /// item as it will read once saved, or as it read for one being deleted.
 nonisolated struct PrioritySave: Hashable, Sendable {
     enum Change: Hashable, Sendable {
-        case saving, adding, deleting, moving
+        case saving, adding, deleting, moving, addingPhoto, removingPhoto
     }
 
     let change: Change
     let text: String
     let isDone: Bool
+}
+
+/// A photo under a priority. A checkbox item can only hold a line of text,
+/// so on the page a photo is an image block (`mediaSingle`) right after the
+/// item's list, splitting it when the item isn't the list's last, as
+/// Confluence's editor does with an image pasted partway down a checklist.
+/// It shows a file attached to the page. Every image block after a list
+/// belongs to that list's last item, until anything else comes along.
+nonisolated struct PriorityPhoto: Identifiable, Hashable, Sendable {
+    /// The media service's id for the file: the attachment's `fileId`.
+    let fileID: String
+    /// `contentId-<page id>`: the page the file is attached to.
+    let collection: String?
+    /// The file name, which Confluence's editor writes as the alt text.
+    let filename: String?
+    /// The image's own size in pixels, when the page says.
+    let pixelWidth: Int?
+    let pixelHeight: Int?
+    /// How wide the page shows it, in pixels, when it says.
+    let displayWidth: Int?
+
+    var id: String { fileID }
+
+    /// The page the file is attached to, by its collection.
+    var pageID: String? {
+        guard let collection, collection.hasPrefix("contentId-") else { return nil }
+        return String(collection.dropFirst("contentId-".count))
+    }
+
+    /// Width over height, when known.
+    var aspectRatio: CGFloat? {
+        guard let pixelWidth, let pixelHeight, pixelWidth > 0, pixelHeight > 0 else { return nil }
+        return CGFloat(pixelWidth) / CGFloat(pixelHeight)
+    }
+
+    /// The photo in an image block, or nil when the block shows something
+    /// else (a link to an outside image, say).
+    init?(block: ADFNode) {
+        guard block.type == "mediaSingle",
+              let media = block.children.first(where: { $0.type == "media" }),
+              media.attr("type") == "file", let id = media.attr("id")
+        else { return nil }
+        fileID = id
+        collection = media.attr("collection")
+        filename = media.attr("alt")
+        pixelWidth = media.intAttr("width")
+        pixelHeight = media.intAttr("height")
+        displayWidth = block.attr("widthType") == "pixel" ? block.intAttr("width") : nil
+    }
+
+    /// The longest side a new photo shows at on the page, in pixels: a
+    /// glance under the priority, not the page's whole width. Opening it
+    /// shows it full size.
+    static let longestShownSide = 480
+
+    /// The image block showing an attachment on page `pageID`: left-aligned
+    /// under the item, `shownWidth` pixels wide or else no larger than
+    /// `longestShownSide`.
+    static func block(fileID: String, pageID: String, filename: String, pixelWidth: Int, pixelHeight: Int, shownWidth: Int? = nil) -> ADFNode {
+        let width = max(pixelWidth, 1)
+        let height = max(pixelHeight, 1)
+        let shownWidth = shownWidth ?? (width >= height
+            ? min(width, longestShownSide)
+            : min(width, longestShownSide * width / height))
+        let media = ADFNode(type: "media", attrs: [
+            "type": .string("file"),
+            "id": .string(fileID),
+            "collection": .string("contentId-\(pageID)"),
+            "alt": .string(filename),
+            "width": .number(Double(width)),
+            "height": .number(Double(height)),
+        ])
+        return ADFNode(type: "mediaSingle", attrs: [
+            "layout": .string("align-start"),
+            "width": .number(Double(max(shownWidth, 1))),
+            "widthType": .string("pixel"),
+        ], content: [media])
+    }
+}
+
+/// A photo on its way to a priority: shown from the picked image while it
+/// uploads, before the page has it.
+nonisolated struct PriorityPhotoUpload: Identifiable, Hashable, Sendable {
+    let id: UUID
+    let filename: String
+    /// A small copy of the image to show meanwhile.
+    let preview: Data?
+    let pixelWidth: Int
+    let pixelHeight: Int
+
+    var aspectRatio: CGFloat {
+        pixelWidth > 0 && pixelHeight > 0 ? CGFloat(pixelWidth) / CGFloat(pixelHeight) : 4 / 3
+    }
 }
 
 /// The text a new inline comment highlights. Confluence finds it by
@@ -115,6 +208,8 @@ nonisolated struct PriorityDay: Identifiable, Hashable, Sendable {
     var id: String { pageID }
     var items: [PriorityItem] { document.taskItems }
     var openCount: Int { items.filter { !$0.isDone }.count }
+    /// Each item's photos, by item id; items without any aren't in it.
+    var photos: [String: [PriorityPhoto]] { document.photosByItem }
 
     init(page: ConfluencePage, day: Date, siteURL: URL) {
         pageID = page.id
@@ -313,21 +408,37 @@ nonisolated extension ADFNode {
     }
 
     /// A copy with the items appended to the document's last top-level task
-    /// list, or to a new one at the end.
+    /// list, or to a new one at the end. When that list's last item has
+    /// photos, the new list goes after them, so they stay that item's.
     func appendingTaskItem(_ items: [ADFNode]) -> ADFNode {
         var blocks = children
         if let index = blocks.lastIndex(where: { $0.type == "taskList" }) {
             let list = blocks[index]
-            blocks[index] = ADFNode(type: "taskList", attrs: list.attrs, content: list.children + items)
+            if let last = list.taskItems.last?.id, let end = photoBlocks.last(where: { $0.itemID == last })?.index {
+                blocks.insert(ADFNode.taskList(items), at: end + 1)
+            } else {
+                blocks[index] = ADFNode(type: "taskList", attrs: list.attrs, content: list.children + items)
+            }
         } else {
             blocks.append(ADFNode.taskList(items))
         }
         return ADFNode(type: type, attrs: attrs, content: blocks)
     }
 
-    /// A copy with `item` right after the task item `id`, in the same list;
-    /// nil when there's no such item.
+    /// A copy with `item` right after the task item `id`, in the same list
+    /// (or, when `id` has photos, after those, so they stay its); nil when
+    /// there's no such item.
     func insertingTaskItem(_ item: ADFNode, after id: String) -> ADFNode? {
+        if type == "doc", let end = photoBlocks.last(where: { $0.itemID == id })?.index {
+            var blocks = children
+            let next = end + 1
+            if next < blocks.count, blocks[next].type == "taskList" {
+                blocks[next] = ADFNode(type: "taskList", attrs: blocks[next].attrs, content: [item] + blocks[next].children)
+            } else {
+                blocks.insert(ADFNode.taskList([item]), at: next)
+            }
+            return ADFNode(type: type, text: text, attrs: attrs, marks: marks, content: blocks)
+        }
         guard var blocks = content else { return nil }
         for (index, child) in blocks.enumerated() {
             if child.type == "taskItem", child.attr("localId") == id {
@@ -340,6 +451,98 @@ nonisolated extension ADFNode {
             return ADFNode(type: type, text: text, attrs: attrs, marks: marks, content: blocks)
         }
         return nil
+    }
+
+    // MARK: Photos
+
+    /// The document's top-level image blocks that sit under an item, each
+    /// with its index among the top-level blocks and that item's id: the
+    /// last item of the list before it, with nothing but blank lines and
+    /// other photos in between.
+    private var photoBlocks: [(index: Int, itemID: String, photo: PriorityPhoto)] {
+        var owner: String?
+        var found: [(index: Int, itemID: String, photo: PriorityPhoto)] = []
+        for (index, block) in children.enumerated() {
+            if block.type == "taskList" {
+                owner = block.taskItems.last?.id
+            } else if let photo = PriorityPhoto(block: block) {
+                if let owner { found.append((index, owner, photo)) }
+            } else if !block.isBlank {
+                owner = nil
+            }
+        }
+        return found
+    }
+
+    /// Each item's photos, in page order, by item id.
+    var photosByItem: [String: [PriorityPhoto]] {
+        Dictionary(grouping: photoBlocks, by: { $0.itemID }).mapValues { $0.map(\.photo) }
+    }
+
+    /// Where photos under item `id` go: its top-level list, and its place
+    /// in that list. Nil when it isn't in a top-level list, or has indented
+    /// items under it, which a photo can't come between.
+    private func photoSpot(forItem id: String) -> (listIndex: Int, position: Int)? {
+        for (index, block) in children.enumerated() where block.type == "taskList" {
+            guard let position = block.children.firstIndex(where: { $0.type == "taskItem" && $0.attr("localId") == id }) else { continue }
+            let next = position + 1
+            if next < block.children.count, block.children[next].type != "taskItem" { return nil }
+            return (index, position)
+        }
+        return nil
+    }
+
+    /// Whether item `id` can have photos added: it's on the page and not
+    /// indented under another, nor has items indented under it.
+    func canAddPhotos(toItem id: String) -> Bool {
+        photoSpot(forItem: id) != nil
+    }
+
+    /// A copy with image blocks under item `id`, after any it has. When it
+    /// isn't its list's last item, the list splits there, as Confluence's
+    /// editor splits a checklist an image is pasted into. Nil when the item
+    /// can't have photos (see `canAddPhotos`).
+    func insertingPhotos(_ blocks: [ADFNode], underItem id: String) -> ADFNode? {
+        guard let spot = photoSpot(forItem: id) else { return nil }
+        var top = children
+        let list = top[spot.listIndex]
+        if spot.position == list.children.count - 1 {
+            let end = photoBlocks.last(where: { $0.itemID == id })?.index ?? spot.listIndex
+            top.insert(contentsOf: blocks, at: end + 1)
+        } else {
+            let before = ADFNode(type: "taskList", attrs: list.attrs, content: Array(list.children[...spot.position]))
+            let after = ADFNode.taskList(Array(list.children[(spot.position + 1)...]))
+            top.replaceSubrange(spot.listIndex...spot.listIndex, with: [before] + blocks + [after])
+        }
+        return ADFNode(type: type, text: text, attrs: attrs, marks: marks, content: top)
+    }
+
+    /// A copy without item `id`'s photos, or the blank lines among them.
+    /// Where that leaves its list touching the next one, they're joined
+    /// back into one, as they were before the photos split them.
+    func removingPhotos(ofItem id: String) -> ADFNode {
+        let owned = photoBlocks.filter { $0.itemID == id }.map(\.index)
+        guard let first = owned.first, let last = owned.last,
+              let listIndex = children[..<first].lastIndex(where: { $0.type == "taskList" }) else { return self }
+        var top = children
+        top.removeSubrange((listIndex + 1)...last)
+        let next = listIndex + 1
+        if next < top.count, top[next].type == "taskList" {
+            top[listIndex] = ADFNode(type: "taskList", attrs: top[listIndex].attrs, content: top[listIndex].children + top[next].children)
+            top.remove(at: next)
+        }
+        return ADFNode(type: type, text: text, attrs: attrs, marks: marks, content: top)
+    }
+
+    /// A copy without one of item `id`'s photos; the last one goes as
+    /// `removingPhotos` takes them all.
+    func removingPhoto(_ fileID: String, ofItem id: String) -> ADFNode {
+        let owned = photoBlocks.filter { $0.itemID == id }
+        guard let target = owned.first(where: { $0.photo.fileID == fileID }) else { return self }
+        if owned.count == 1 { return removingPhotos(ofItem: id) }
+        var top = children
+        top.remove(at: target.index)
+        return ADFNode(type: type, text: text, attrs: attrs, marks: marks, content: top)
     }
 
     /// Ids of the inline comments whose highlight covers part of this node.

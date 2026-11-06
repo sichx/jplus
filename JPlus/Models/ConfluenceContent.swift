@@ -88,6 +88,28 @@ nonisolated struct ConfluencePage: Decodable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// Element of `GET /wiki/api/v2/pages/{id}/attachments`: a file attached to
+/// a page. An image on the page is a `media` node whose `id` is the file's
+/// `fileId` and whose `collection` is `contentId-<page id>`.
+nonisolated struct ConfluenceAttachment: Decodable, Identifiable, Hashable, Sendable {
+    let id: String
+    /// The file name.
+    let title: String
+    let mediaType: String?
+    /// The media service's id for the file, which `media` nodes use.
+    let fileId: String?
+    let fileSize: Int?
+    /// Where its bytes download from, under `/wiki`.
+    let downloadLink: String?
+    let pageId: String?
+
+    /// The download link from the site's root, which `JiraClient.siteData` takes.
+    var sitePath: String? {
+        guard let downloadLink else { return nil }
+        return downloadLink.hasPrefix("/wiki/") ? downloadLink : "/wiki" + downloadLink
+    }
+}
+
 /// Element of `GET /wiki/api/v2/pages/{id}/inline-comments` and
 /// `…/inline-comments/{id}/children`. An inline comment hangs on a stretch
 /// of the page's text, which carries an `annotation` mark whose id is the
