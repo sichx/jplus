@@ -144,6 +144,57 @@ nonisolated struct PriorityDayRef: Identifiable, Hashable, Sendable {
     }
 }
 
+/// A search through the priorities. Each word typed, or "phrase in quotes",
+/// has to be somewhere in an item's text, ignoring case and accents.
+nonisolated struct PrioritySearch: Hashable, Sendable {
+    let terms: [String]
+
+    init(_ text: String) {
+        terms = text.matches(of: /"([^"]+)"|[^\s"]+/).compactMap { match in
+            let term = String(match.output.1 ?? match.output.0).trimmingCharacters(in: .whitespaces)
+            return term.isEmpty ? nil : term
+        }
+    }
+
+    var isEmpty: Bool { terms.isEmpty }
+
+    static let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+
+    func matches(_ text: String) -> Bool {
+        !terms.isEmpty && terms.allSatisfy { text.range(of: $0, options: Self.options) != nil }
+    }
+
+    /// The days with items it finds, each with only those, in the order
+    /// they're listed on the page; days newest first, or oldest first.
+    func results(in days: [PriorityDay], order: PrioritySearchOrder) -> [PrioritySearchMatch] {
+        let found = days.compactMap { day -> PrioritySearchMatch? in
+            let items = day.items.filter { matches($0.plainText) }
+            return items.isEmpty ? nil : PrioritySearchMatch(day: day, items: items)
+        }
+        return found.sorted { order == .oldestFirst ? $0.day.day < $1.day.day : $0.day.day > $1.day.day }
+    }
+}
+
+/// The items a search found on one day.
+nonisolated struct PrioritySearchMatch: Identifiable, Hashable, Sendable {
+    let day: PriorityDay
+    let items: [PriorityItem]
+
+    var id: String { day.pageID }
+}
+
+/// Which way search results run by day.
+nonisolated enum PrioritySearchOrder: String, CaseIterable, Sendable {
+    case newestFirst, oldestFirst
+
+    var title: String {
+        switch self {
+        case .newestFirst: "Newest First"
+        case .oldestFirst: "Oldest First"
+        }
+    }
+}
+
 /// How days and months are named in Confluence: `2026-10` folders holding
 /// `2026-10-07` pages, in the Mac's calendar and time zone.
 nonisolated enum PriorityNaming {

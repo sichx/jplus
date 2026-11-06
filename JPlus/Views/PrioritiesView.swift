@@ -51,12 +51,28 @@ struct PrioritiesView: View {
     @State private var newItemSpot: NewItemSpot?
     /// The item swiped open to show its actions, on iOS.
     @State private var swipedOpenID: String?
+    /// What's typed in the search field.
+    @State private var searchText = ""
+    @FocusState private var isSearchFocused: Bool
+    /// The search result picked, shown in its day with the matches still
+    /// highlighted, until the search changes or Back to Results.
+    @State private var revealed: RevealedResult?
+    /// Which way search results run by day.
+    @AppStorage("prioritiesSearchOrder") private var searchOrder = PrioritySearchOrder.newestFirst
 
     private var folderID: String? { PriorityNaming.folderID(from: folderInput) }
+    private var search: PrioritySearch { PrioritySearch(searchText) }
 
     var body: some View {
         content
             .navigationTitle("Daily Priorities")
+            .searchable(text: $searchText, prompt: "Search Priorities")
+            .searchFocused($isSearchFocused)
+            .onChange(of: searchText) { revealed = nil }
+            // Every day is read for search when one starts.
+            .task(id: search.isEmpty) {
+                if !search.isEmpty { await model.loadSearchDays() }
+            }
             .adaptiveInspector(isPresented: Binding(get: { showsDayList && folderID != nil }, set: { showsDayList = $0 })) {
                 PriorityDayList(model: model)
                     .lockedWhileSaving(model.saving != nil)
@@ -98,6 +114,10 @@ struct PrioritiesView: View {
             .onChange(of: model.selectedID) {
                 // Picking a day from the sheet shows it.
                 if usesDayListSheet { showsDayList = false }
+                // So does picking one while searching, with the matches highlighted.
+                if !search.isEmpty, let id = model.selectedID, id != revealed?.pageID {
+                    revealed = RevealedResult(pageID: id, itemID: nil)
+                }
             }
             .loadTask(id: folderID) {
                 guard let client = session.client else { return }
@@ -177,15 +197,25 @@ struct PrioritiesView: View {
                     isPickingNewDay = true
                 }
             }
+        } else if !search.isEmpty, revealed == nil {
+            PrioritySearchResults(model: model, search: search, text: searchText, order: $searchOrder, onOpen: openResult)
         } else {
             days
         }
     }
 
+    /// Shows a search result in its day, scrolled to it, with the matches
+    /// still highlighted.
+    private func openResult(_ item: PriorityItem, in day: PriorityDay) {
+        model.showFound(day.pageID)
+        revealed = RevealedResult(pageID: day.pageID, itemID: item.id)
+        isSearchFocused = false
+    }
+
     // MARK: - Days
 
     private var days: some View {
-        PriorityPane(model: model, drafts: drafts, swipedOpenID: $swipedOpenID) {
+        PriorityPane(model: model, drafts: drafts, swipedOpenID: $swipedOpenID, revealID: revealed?.itemID) {
             #if os(macOS)
             // All built at once. A lazy stack built a whole day as it
             // scrolled into view and measured days again as they came and
@@ -207,6 +237,15 @@ struct PrioritiesView: View {
 
     @ViewBuilder
     private var dayStack: some View {
+        if revealed != nil {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Text("Highlighting “\(searchText.trimmingCharacters(in: .whitespaces))”").foregroundStyle(.secondary)
+                Button("Back to Results") { revealed = nil }
+                    .linkButtonStyle()
+            }
+            .scaledFont(.callout)
+        }
         if let message = model.errorMessage {
             PriorityErrorLabel(message: message)
         }
@@ -258,7 +297,8 @@ struct PrioritiesView: View {
             dayHeader(day)
             PriorityItemList(day: day, model: model,
                              emptyText: isSelected ? "Nothing listed yet." : "No priorities were listed.",
-                             canAdd: isSelected, newItemSpot: $newItemSpot, swipedOpenID: $swipedOpenID)
+                             canAdd: isSelected, newItemSpot: $newItemSpot, swipedOpenID: $swipedOpenID,
+                             highlight: revealed == nil ? nil : search, revealedItemID: revealed?.itemID)
         }
     }
 
@@ -373,24 +413,6 @@ struct PrioritiesView: View {
         .frame(width: 300)
     }
 
-    // MARK: - Labels
-
-    private func dayLabel(_ day: Date) -> String {
-        let calendar = Calendar.current
-        if calendar.isDateInToday(day) { return "Today" }
-        if calendar.isDateInYesterday(day) { return "Yesterday" }
-        if calendar.isDateInTomorrow(day) { return "Tomorrow" }
-        return day.formatted(.dateTime.weekday(.wide))
-    }
-
-    /// "Wednesday, October 7", with the year when it isn't this year.
-    private func longDate(_ day: Date) -> String {
-        if Calendar.current.isDate(day, equalTo: Date(), toGranularity: .year) {
-            return day.formatted(.dateTime.weekday(.wide).month(.wide).day())
-        }
-        return day.formatted(.dateTime.weekday(.wide).month(.wide).day().year())
-    }
-
     // MARK: - Folder
 
     private var folderChooser: some View {
@@ -422,10 +444,34 @@ struct PrioritiesView: View {
     }
 }
 
+/// "Today", "Yesterday", "Tomorrow", or the weekday.
+private func dayLabel(_ day: Date) -> String {
+    let calendar = Calendar.current
+    if calendar.isDateInToday(day) { return "Today" }
+    if calendar.isDateInYesterday(day) { return "Yesterday" }
+    if calendar.isDateInTomorrow(day) { return "Tomorrow" }
+    return day.formatted(.dateTime.weekday(.wide))
+}
+
+/// "Wednesday, October 7", with the year when it isn't this year.
+private func longDate(_ day: Date) -> String {
+    if Calendar.current.isDate(day, equalTo: Date(), toGranularity: .year) {
+        return day.formatted(.dateTime.weekday(.wide).month(.wide).day())
+    }
+    return day.formatted(.dateTime.weekday(.wide).month(.wide).day().year())
+}
+
 /// Where a new priority is being typed: under the item Return was pressed in.
 struct NewItemSpot: Equatable {
     let pageID: String
     let afterID: String
+}
+
+/// A search result picked to see in its day: the day, and the item when
+/// one was picked rather than the day from the list.
+struct RevealedResult: Equatable {
+    let pageID: String
+    let itemID: String?
 }
 
 /// The scrolling pane priorities show in, up to a readable width. A change
@@ -437,6 +483,8 @@ struct PriorityPane<Content: View>: View {
     let drafts: PriorityDrafts
     /// The item swiped open to show its actions, on iOS.
     @Binding var swipedOpenID: String?
+    /// The item to scroll to: a search result picked to see in its day.
+    var revealID: String? = nil
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -448,6 +496,11 @@ struct PriorityPane<Content: View>: View {
                     // The scroll view only spans its content's width, so the
                     // content fills the pane to keep the scroller at its edge.
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onChange(of: revealID, initial: true) {
+                guard let revealID else { return }
+                // Once the day it's in has been laid out.
+                DispatchQueue.main.async { proxy.scrollTo(revealID, anchor: .center) }
             }
             .environment(drafts)
             .lockedWhileSaving(model.saving != nil)
@@ -525,6 +578,10 @@ struct PriorityItemList: View {
     @Binding var newItemSpot: NewItemSpot?
     /// The item swiped open to show its actions, on iOS.
     @Binding var swipedOpenID: String?
+    /// The search whose matches are highlighted, while a result is shown.
+    var highlight: PrioritySearch? = nil
+    /// The search result picked, which is marked.
+    var revealedItemID: String? = nil
 
     #if os(iOS)
     /// Rows carry their own padding and separator, as in Reminders.
@@ -551,11 +608,15 @@ struct PriorityItemList: View {
                             hasComments: hasComments,
                             canMoveToToday: model.todayRef.map { $0.pageID != day.pageID } ?? false,
                             isBusy: model.busyItemIDs.contains(item.id),
+                            highlight: highlight,
+                            isRevealed: item.id == revealedItemID,
                             model: model,
                             swipedOpenID: $swipedOpenID,
                             onReturn: { newItemSpot = spot }
                         )
                         .equatable()
+                        // For scrolling to a search result.
+                        .id(item.id)
                         if newItemSpot == spot {
                             NewPriorityRow(itemName: itemName) { text in
                                 // The next one starts under the one just added.
@@ -693,6 +754,152 @@ private struct PriorityDayList: View {
     }
 }
 
+/// The priorities a search found, under the day each is on, with what it
+/// matched highlighted. Days run newest or oldest first; picking a result
+/// shows it in its day. Until every day has been read, it looks through
+/// the days already loaded.
+private struct PrioritySearchResults: View {
+    let model: PrioritiesModel
+    let search: PrioritySearch
+    /// The search as typed.
+    let text: String
+    @Binding var order: PrioritySearchOrder
+    let onOpen: (PriorityItem, PriorityDay) -> Void
+
+    var body: some View {
+        let results = search.results(in: model.searchableDays, order: order)
+        let count = results.reduce(0) { $0 + $1.items.count }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                header(count: count, days: results.count)
+                if let message = model.searchError {
+                    PriorityErrorLabel(message: message)
+                }
+                ForEach(results) { match in
+                    section(match)
+                }
+            }
+            .frame(maxWidth: 820, alignment: .leading)
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .overlay {
+            if results.isEmpty, !model.isLoadingSearch {
+                ScaledContentUnavailableView {
+                    Label("No Results", systemImage: "magnifyingglass")
+                } description: {
+                    Text("No priorities match “\(text.trimmingCharacters(in: .whitespaces))”.")
+                }
+            }
+        }
+    }
+
+    private func header(count: Int, days: Int) -> some View {
+        HStack(spacing: 8) {
+            if count > 0 {
+                Text("\(count) \(count == 1 ? "priority" : "priorities") on \(days) \(days == 1 ? "day" : "days")")
+                    .foregroundStyle(.secondary)
+            }
+            if model.isLoadingSearch {
+                ProgressView().controlSize(.small)
+                Text("Searching every day…").foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Picker("Sort", selection: $order) {
+                ForEach(PrioritySearchOrder.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
+            .help("Which way the days run")
+        }
+        .scaledFont(.callout)
+    }
+
+    private func section(_ match: PrioritySearchMatch) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // The date, and Today or Yesterday when it's one of those.
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(longDate(match.day.day))
+                    .scaledFont(.headline)
+                let label = dayLabel(match.day.day)
+                if label != match.day.day.formatted(.dateTime.weekday(.wide)) {
+                    Text(label)
+                        .scaledFont(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(match.items) { item in
+                    PrioritySearchResultRow(item: item, search: search) { onOpen(item, match.day) }
+                }
+            }
+        }
+    }
+}
+
+/// One priority a search found: its check (which only shows) and its text
+/// with the matches highlighted. Clicking it shows it in its day.
+private struct PrioritySearchResultRow: View {
+    let item: PriorityItem
+    let search: PrioritySearch
+    let onOpen: () -> Void
+
+    @Environment(\.textSizeScale) private var textScale
+    @Environment(\.appFont) private var appFont
+    @State private var isHovered = false
+
+    #if os(iOS)
+    private static let openSymbol = "circle"
+    private static let doneSymbol = "largecircle.fill.circle"
+    #else
+    private static let openSymbol = "square"
+    private static let doneSymbol = "checkmark.square.fill"
+    #endif
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(alignment: .firstTextBaseline, spacing: PriorityItemRow.lineSpacing) {
+                Image(systemName: item.isDone ? Self.doneSymbol : Self.openSymbol)
+                    .foregroundStyle(item.isDone ? Color.accentColor : .secondary)
+                    .frame(width: PriorityItemRow.checkWidth)
+                Text(search.highlighting(ADFInline.attributedString(item.content, textScale: textScale, font: appFont)))
+                    .strikethrough(item.isDone && PriorityItemRow.strikesDone)
+                    .foregroundStyle(item.isDone ? .secondary : .primary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(isHovered ? Color.primary.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Show it in its day")
+        // The padding is only for the highlight; keep the row in line with the day above.
+        .padding(.horizontal, -6)
+    }
+}
+
+extension PrioritySearch {
+    /// `text` with every stretch the search matches highlighted, as a find
+    /// in a document shows them.
+    func highlighting(_ text: AttributedString) -> AttributedString {
+        var text = text
+        for term in terms {
+            var start = text.startIndex
+            while let range = text[start...].range(of: term, options: Self.options) {
+                text[range].backgroundColor = Self.highlightColor
+                start = range.upperBound
+            }
+        }
+        return text
+    }
+
+    static let highlightColor = Color.yellow.opacity(0.45)
+}
+
 private extension View {
     /// While a change saves, washes the view out and lets no click or tap
     /// through to it. The wash is always there, clear and letting clicks
@@ -801,6 +1008,10 @@ private struct PriorityItemRow: View {
     /// Today has a page and this item is on another day.
     let canMoveToToday: Bool
     let isBusy: Bool
+    /// The search whose matches are highlighted in its text, if any.
+    let highlight: PrioritySearch?
+    /// It's the search result picked, so it's marked.
+    let isRevealed: Bool
     let model: PrioritiesModel
     /// The item swiped open to show its actions (iOS); one at a time.
     @Binding var swipedOpenID: String?
@@ -844,6 +1055,7 @@ private struct PriorityItemRow: View {
             Divider()
                 .padding(.leading, Self.checkWidth + 12)
         }
+        .background(isRevealed ? Color.accentColor.opacity(0.12) : .clear)
         .modifier(SwipeToRevealActions(
             isOpen: Binding(
                 get: { swipedOpenID == item.id },
@@ -859,7 +1071,7 @@ private struct PriorityItemRow: View {
         line
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
-            .background(isHovered || openMenu != nil ? Color.primary.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .background(rowFill, in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
             .contextMenu { menu }
             .onHover { isHovered = $0 }
@@ -876,6 +1088,15 @@ private struct PriorityItemRow: View {
             .padding(.vertical, -3)
         #endif
     }
+
+    #if os(macOS)
+    /// Tinted when it's the search result picked; otherwise lit under the
+    /// pointer and while its menu is open.
+    private var rowFill: Color {
+        if isRevealed { return Color.accentColor.opacity(0.14) }
+        return isHovered || openMenu != nil ? Color.primary.opacity(0.06) : .clear
+    }
+    #endif
 
     #if os(iOS)
     /// Comment needs text to hang on, and an item with comments can't be edited.
@@ -995,7 +1216,7 @@ private struct PriorityItemRow: View {
                 #endif
                 .onDisappear(perform: commitEdit)
         } else {
-            Text(ADFInline.attributedString(item.content, textScale: textScale, font: appFont))
+            Text(highlighted(ADFInline.attributedString(item.content, textScale: textScale, font: appFont)))
                 .strikethrough(item.isDone && Self.strikesDone)
                 .foregroundStyle(item.isDone ? .secondary : .primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1075,6 +1296,11 @@ private struct PriorityItemRow: View {
         .accessibilityLabel(item.plainText)
     }
     #endif
+
+    /// The text with the search's matches highlighted, while there's a search.
+    private func highlighted(_ text: AttributedString) -> AttributedString {
+        highlight.map { $0.highlighting(text) } ?? text
+    }
 
     private func beginEdit() {
         // New text would drop the highlight its comments hang on, or the
@@ -1164,6 +1390,7 @@ extension PriorityItemRow: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.item == b.item && a.day.pageID == b.day.pageID && a.threads == b.threads && a.hasComments == b.hasComments
             && a.canMoveToToday == b.canMoveToToday && a.isBusy == b.isBusy
+            && a.highlight == b.highlight && a.isRevealed == b.isRevealed
     }
 }
 

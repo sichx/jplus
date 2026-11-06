@@ -36,6 +36,16 @@ final class PrioritiesModel {
     private(set) var isCreatingDay = false
     /// Ids of day pages being archived.
     private(set) var archivingPageIDs: Set<String> = []
+    /// Every day's page as search last read them, by page id.
+    private(set) var searchDays: [String: PriorityDay] = [:]
+    /// True while search reads every day's page.
+    private(set) var isLoadingSearch = false
+    private(set) var searchError: String?
+    /// When search last read every day, so it doesn't read them again for
+    /// each search.
+    private var searchLoadedAt: ContinuousClock.Instant?
+    /// How long what search read is used before it's read again.
+    private static let searchFreshness: Duration = .seconds(60)
 
     private var client: JiraClient?
     private var folderID = ""
@@ -103,6 +113,10 @@ final class PrioritiesModel {
     // MARK: - Loading
 
     func load(client: JiraClient, folderID: String) async {
+        if folderID != self.folderID || client.credentials.siteURL != self.client?.credentials.siteURL {
+            searchDays = [:]
+            searchLoadedAt = nil
+        }
         self.client = client
         self.folderID = folderID
         singlePageID = nil
@@ -199,6 +213,11 @@ final class PrioritiesModel {
             await load(client: client, pageID: singlePageID)
         } else {
             await load(client: client, folderID: folderID)
+            // Search reads every day again too, once it has read them before.
+            if searchLoadedAt != nil {
+                searchLoadedAt = nil
+                await loadSearchDays()
+            }
         }
     }
 
@@ -324,6 +343,64 @@ final class PrioritiesModel {
             .filter { !$0.isEmpty }
             .map { ADFNode(type: "paragraph", content: ADFNode.inlineContent(from: $0, siteURL: siteURL)) }
         return paragraphs.isEmpty ? nil : ADFNode(type: "doc", content: paragraphs)
+    }
+
+    // MARK: - Search
+
+    /// Every day search looks through, newest first. A day on screen can
+    /// have edits that haven't saved yet, so that copy counts, unless search
+    /// has read a newer version of it since.
+    var searchableDays: [PriorityDay] {
+        index.compactMap { ref in
+            let shown = pages[ref.pageID]
+            let read = searchDays[ref.pageID]
+            guard let shown else { return read }
+            guard let read, read.version > shown.version else { return shown }
+            return read
+        }
+    }
+
+    /// Reads every day's page for search, in a request or two, unless it did
+    /// in the last minute. Until it's done, search looks through the days
+    /// already loaded.
+    func loadSearchDays() async {
+        guard let client, singlePageID == nil, !index.isEmpty, !isLoadingSearch else { return }
+        if let searchLoadedAt, ContinuousClock.now - searchLoadedAt < Self.searchFreshness { return }
+        isLoadingSearch = true
+        defer { isLoadingSearch = false }
+        do {
+            let found = try await client.confluencePages(ids: index.map(\.pageID))
+            // The days as they are now, in case one went or came while reading.
+            let refs = Dictionary(index.map { ($0.pageID, $0) }, uniquingKeysWith: { first, _ in first })
+            var days: [String: PriorityDay] = [:]
+            for page in found {
+                guard let ref = refs[page.id] else { continue }
+                days[page.id] = PriorityDay(page: page, day: ref.day, siteURL: client.credentials.siteURL)
+            }
+            searchDays = days
+            searchLoadedAt = .now
+            searchError = nil
+        } catch where error.isCancellation {
+            return
+        } catch {
+            searchError = "Couldn't read every day to search them: \(error.localizedDescription)"
+        }
+    }
+
+    /// Shows a day search found on its own, at once: from the copy search
+    /// read when that's newer than the one loaded (and nothing on it is
+    /// waiting to save). Its comments load after.
+    func showFound(_ pageID: String) {
+        shownIDs = [pageID]
+        if let read = searchDays[pageID], read.version > pages[pageID]?.version ?? 0,
+           !pendingEdits.contains(where: { $0.pageID == pageID }) {
+            pages[pageID] = read
+        }
+        if pages[pageID] == nil {
+            Task { await loadDay(pageID) }
+        } else if commentThreads[pageID] == nil {
+            Task { await loadComments(pageID) }
+        }
     }
 
     // MARK: - New day

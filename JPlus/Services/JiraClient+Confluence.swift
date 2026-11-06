@@ -34,6 +34,38 @@ extension JiraClient {
         ])
     }
 
+    /// Many pages with their bodies, as search needs every day's: a request
+    /// per hundred ids (more if Confluence splits its answer), where reading
+    /// them one at a time took a request each. Pages that have gone, or been
+    /// archived, are left out.
+    func confluencePages(ids: [String]) async throws -> [ConfluencePage] {
+        struct Page: Decodable {
+            let results: [ConfluencePage]
+            let _links: Links?
+            struct Links: Decodable { let next: String? }
+        }
+        var pages: [ConfluencePage] = []
+        for start in stride(from: 0, to: ids.count, by: 100) {
+            let batch = ids[start..<min(start + 100, ids.count)]
+            var cursor: String?
+            repeat {
+                var query = batch.map { URLQueryItem(name: "id", value: $0) }
+                query += [
+                    URLQueryItem(name: "body-format", value: "atlas_doc_format"),
+                    URLQueryItem(name: "status", value: "current"),
+                    URLQueryItem(name: "limit", value: "250"),
+                ]
+                if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+                let page: Page = try await get("/wiki/api/v2/pages", query: query)
+                pages += page.results
+                // The next part's link carries a cursor to ask for it with.
+                cursor = page.results.isEmpty ? nil : page._links?.next
+                    .flatMap { URLComponents(string: $0)?.queryItems?.first { $0.name == "cursor" }?.value }
+            } while cursor != nil
+        }
+        return pages
+    }
+
     /// A page's open inline comments (the ones on highlighted text), oldest
     /// first. Replies aren't among them; `confluenceCommentReplies` has those.
     func confluenceInlineComments(pageID: String) async throws -> [ConfluenceComment] {

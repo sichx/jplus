@@ -29,7 +29,14 @@ nonisolated final class DemoServer: @unchecked Sendable {
             return error(400, "Bad request.")
         }
         var query: [String: String] = [:]
-        for item in components.queryItems ?? [] { query[item.name] = item.value ?? "" }
+        for item in components.queryItems ?? [] {
+            // Repeated ids, as the pages list takes them (`id=1&id=2`), are kept together: "1,2".
+            if item.name == "id", let ids = query["id"] {
+                query["id"] = ids + "," + (item.value ?? "")
+            } else {
+                query[item.name] = item.value ?? ""
+            }
+        }
         let parts = components.path.split(separator: "/").map { String($0).removingPercentEncoding ?? String($0) }
         let method = request.httpMethod ?? "GET"
         let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
@@ -201,6 +208,11 @@ nonisolated final class DemoServer: @unchecked Sendable {
             let folder = DemoFolder(id: newID(), title: json["title"] as? String ?? "Untitled", parentID: json["parentId"] as? String)
             state.folders.append(folder)
             return ok(folderJSON(folder))
+        }
+        if match(method, parts, "GET wiki/api/v2/pages") != nil {
+            let ids = Set((query["id"] ?? "").split(separator: ",").map(String.init))
+            let pages = state.pages.filter { ids.contains($0.id) && $0.status == "current" }.map(pageJSON)
+            return ok(["results": pages, "_links": ["base": "\(DemoSite.siteURL)/wiki"]])
         }
         if let p = match(method, parts, "GET wiki/api/v2/pages/*") {
             let id = p[0]
