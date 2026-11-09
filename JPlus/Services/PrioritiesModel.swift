@@ -49,10 +49,10 @@ final class PrioritiesModel {
     /// Photos uploading under each item, by item id, shown from the picked
     /// images until the page has them.
     private(set) var photoUploads: [String: [PriorityPhotoUpload]] = [:]
-    /// Each page's attachments as last listed, by page id, to find the file
-    /// a photo on it shows.
-    @ObservationIgnored private var attachmentLists: [String: [ConfluenceAttachment]] = [:]
-    @ObservationIgnored private var attachmentLoads: [String: Task<[ConfluenceAttachment], Error>] = [:]
+    /// Each page's and comment's attachments as last listed, to find the
+    /// file a photo on a page, or an image in a comment, shows.
+    @ObservationIgnored private var attachmentLists: [AttachmentOwner: [ConfluenceAttachment]] = [:]
+    @ObservationIgnored private var attachmentLoads: [AttachmentOwner: Task<[ConfluenceAttachment], Error>] = [:]
 
     private var client: JiraClient?
     private var folderID = ""
@@ -761,24 +761,66 @@ final class PrioritiesModel {
     /// Confluence's editor writes as the alt text. A page's attachments are
     /// listed once, and again when one isn't among them, as it may be new.
     private func attachment(for photo: PriorityPhoto, onPage pageID: String) async throws -> ConfluenceAttachment {
-        let owner = photo.pageID ?? pageID
+        try await attachment(fileID: photo.fileID, filename: photo.filename, of: .page(photo.pageID ?? pageID))
+    }
+
+    /// What a comment's text needs to show its images, which open in
+    /// Quick Look through `preview`.
+    func files(of comment: ConfluenceComment, preview: @escaping @MainActor (URL) -> Void) -> ADFConfluenceFiles? {
+        guard let client else { return nil }
+        return ADFConfluenceFiles(id: "\(client.credentials.siteHost)/comment-\(comment.id)", client: client, attachment: { [weak self] media in
+            guard let self else { throw CancellationError() }
+            return try await self.attachment(for: media, in: comment)
+        }, preview: preview)
+    }
+
+    /// The file a `media` node in a comment shows. Confluence attaches the
+    /// images in a comment to the comment itself, naming the collection
+    /// `comment-container-<page id>`, so they're among its attachments. One
+    /// whose collection names a page (copied in from it) is that page's.
+    private func attachment(for media: ADFNode, in comment: ConfluenceComment) async throws -> ConfluenceAttachment {
+        guard let fileID = media.attr("id") else { throw PriorityPhotoError.notFound }
+        let collection = media.attr("collection") ?? ""
+        let owner: AttachmentOwner = collection.hasPrefix("contentId-")
+            ? .page(String(collection.dropFirst("contentId-".count)))
+            : .comment(comment.id)
+        return try await attachment(fileID: fileID, filename: media.attr("alt"), of: owner)
+    }
+
+    /// The attachment a media node points at, matched by file id, or failing
+    /// that by name, which Confluence's editor writes as the alt text. An
+    /// owner's attachments are listed once, and again when one isn't among
+    /// them, as it may be new.
+    private func attachment(fileID: String, filename: String?, of owner: AttachmentOwner) async throws -> ConfluenceAttachment {
         func find(_ list: [ConfluenceAttachment]) -> ConfluenceAttachment? {
-            list.first { $0.fileId == photo.fileID } ?? photo.filename.flatMap { name in list.first { $0.title == name } }
+            list.first { $0.fileId == fileID } ?? filename.flatMap { name in list.first { $0.title == name } }
         }
         if let list = attachmentLists[owner], let found = find(list) { return found }
         guard let found = find(try await listAttachments(owner)) else { throw PriorityPhotoError.notFound }
         return found
     }
 
-    /// Lists a page's attachments, once at a time however many photos ask.
-    private func listAttachments(_ pageID: String) async throws -> [ConfluenceAttachment] {
+    /// What files are attached to: a day's page, or a comment on one.
+    private enum AttachmentOwner: Hashable {
+        case page(String)
+        case comment(String)
+    }
+
+    /// Lists a page's or comment's attachments, once at a time however many
+    /// photos ask.
+    private func listAttachments(_ owner: AttachmentOwner) async throws -> [ConfluenceAttachment] {
         guard let client else { throw CancellationError() }
-        if let load = attachmentLoads[pageID] { return try await load.value }
-        let load = Task { try await client.confluenceAttachments(pageID: pageID) }
-        attachmentLoads[pageID] = load
-        defer { attachmentLoads[pageID] = nil }
+        if let load = attachmentLoads[owner] { return try await load.value }
+        let load = Task {
+            switch owner {
+            case .page(let id): try await client.confluenceAttachments(pageID: id)
+            case .comment(let id): try await client.confluenceCommentAttachments(commentID: id)
+            }
+        }
+        attachmentLoads[owner] = load
+        defer { attachmentLoads[owner] = nil }
         let list = try await load.value
-        attachmentLists[pageID] = list
+        attachmentLists[owner] = list
         return list
     }
 
@@ -815,7 +857,7 @@ final class PrioritiesModel {
     /// file by the same name, and notes it among the page's attachments.
     private func attach(_ data: Data, filename: String, mimeType: String, toPage pageID: String) async throws -> ConfluenceAttachment {
         guard let client else { throw CancellationError() }
-        var taken = Set((try? await listAttachments(pageID))?.map(\.title) ?? [])
+        var taken = Set((try? await listAttachments(.page(pageID)))?.map(\.title) ?? [])
         var name = Self.freeName(filename, taken: taken)
         let attachment: ConfluenceAttachment
         do {
@@ -823,10 +865,10 @@ final class PrioritiesModel {
         } catch JiraError.http(400, _) {
             // Someone attached one by that name since the list was read.
             taken.insert(name)
-            name = Self.freeName(filename, taken: taken.union((try? await listAttachments(pageID))?.map(\.title) ?? []))
+            name = Self.freeName(filename, taken: taken.union((try? await listAttachments(.page(pageID)))?.map(\.title) ?? []))
             attachment = try await client.attachToConfluencePage(data, filename: name, mimeType: mimeType, pageID: pageID)
         }
-        attachmentLists[pageID, default: []].append(attachment)
+        attachmentLists[.page(pageID), default: []].append(attachment)
         await PriorityPhotoStore.shared.keep(data, for: attachment, site: client.credentials.siteHost)
         return attachment
     }

@@ -6,10 +6,11 @@ import UIKit
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Downloads the photos on priority pages once and keeps them as files
-/// beside the issue attachments (which Settings can clear), so they draw
-/// from disk on later visits and Quick Look can open them. A photo just
-/// uploaded is kept from the bytes sent, so it shows without downloading.
+/// Downloads the photos on priority pages, and the images in their
+/// comments, once and keeps them as files beside the issue attachments
+/// (which Settings can clear), so they draw from disk on later visits and
+/// Quick Look can open them. A photo just uploaded is kept from the bytes
+/// sent, so it shows without downloading.
 final class PriorityPhotoStore {
     static let shared = PriorityPhotoStore()
 

@@ -53,19 +53,44 @@ struct ADFMediaContext {
     }
 }
 
+/// What ADF media nodes need to show files attached in Confluence: the
+/// images in a priority's comments, which are drawn small, side by side,
+/// and open full size in Quick Look.
+struct ADFConfluenceFiles: Equatable {
+    /// Tells one set of files from another, as closures can't be compared:
+    /// the site and the content they're attached to.
+    let id: String
+    let client: JiraClient
+    /// The attachment a `media` node shows.
+    let attachment: @MainActor (ADFNode) async throws -> ConfluenceAttachment
+    /// Opens a downloaded file in Quick Look.
+    let preview: @MainActor (URL) -> Void
+
+    static func == (a: Self, b: Self) -> Bool { a.id == b.id }
+}
+
 extension EnvironmentValues {
     @Entry var adfMedia: ADFMediaContext? = nil
+    @Entry var adfConfluenceFiles: ADFConfluenceFiles? = nil
 }
 
 private struct ADFBlocks: View {
     let nodes: [ADFNode]
 
+    @Environment(\.adfConfluenceFiles) private var confluenceFiles
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(Self.runs(of: nodes).enumerated()), id: \.offset) { _, run in
+            ForEach(Array(Self.runs(of: nodes, groupingImages: confluenceFiles != nil).enumerated()), id: \.offset) { _, run in
                 switch run {
                 case .text(let nodes): ADFTextRun(nodes: nodes)
                 case .block(let node): ADFBlock(node: node)
+                case .images(let media):
+                    FlowLayout(spacing: 8) {
+                        ForEach(Array(media.enumerated()), id: \.offset) { _, image in
+                            ADFMediaView(media: image.media, maxWidth: image.width)
+                        }
+                    }
                 }
             }
         }
@@ -75,12 +100,26 @@ private struct ADFBlocks: View {
     private enum Run {
         case text([ADFNode])
         case block(ADFNode)
+        /// Images on lines of their own, one after another, by their `media`
+        /// nodes, each with the width its block gives it.
+        case images([(media: ADFNode, width: CGFloat?)])
     }
 
-    /// Consecutive paragraphs, headings and lists go together, so they render as one Text.
-    private static func runs(of nodes: [ADFNode]) -> [Run] {
+    /// Consecutive paragraphs, headings and lists go together, so they
+    /// render as one Text. With `groupingImages`, consecutive uncaptioned
+    /// images go together too, to sit side by side as they're drawn small.
+    private static func runs(of nodes: [ADFNode], groupingImages: Bool) -> [Run] {
         var runs: [Run] = []
         for node in nodes {
+            if groupingImages, let media = ADFMediaSingle.uncaptionedFile(in: node) {
+                let image = (media: media, width: ADFMediaSingle.width(of: media, in: node))
+                if case .images(let previous) = runs.last {
+                    runs[runs.count - 1] = .images(previous + [image])
+                } else {
+                    runs.append(.images([image]))
+                }
+                continue
+            }
             guard ADFTextRun.canInclude(node) else {
                 runs.append(.block(node))
                 continue
@@ -382,7 +421,7 @@ private struct ADFMediaSingle: View {
     var body: some View {
         VStack(alignment: alignment.horizontal, spacing: 4) {
             if let item = node.children.first(where: { $0.type == "media" }) {
-                ADFMediaView(media: item, maxWidth: width(of: item))
+                ADFMediaView(media: item, maxWidth: Self.width(of: item, in: node))
             }
             if let caption = node.children.first(where: { $0.type == "caption" }), !caption.children.isEmpty {
                 Text(ADFInline.attributedString(caption.children, media: media, textScale: textScale, font: appFont))
@@ -402,13 +441,25 @@ private struct ADFMediaSingle: View {
         }
     }
 
-    /// The width chosen in Jira's editor: pixels, or in older content a
-    /// percentage of the 760 pt text column. Wide layouts use the image's own width.
-    private func width(of item: ADFNode) -> CGFloat? {
+    /// The width chosen in Jira's editor for `item` in its block `node`:
+    /// pixels, or in older content a percentage of the 760 pt text column.
+    /// Wide layouts use the image's own width.
+    static func width(of item: ADFNode, in node: ADFNode) -> CGFloat? {
         let natural = item.intAttr("width").map(CGFloat.init)
         if ["wide", "full-width"].contains(node.attr("layout")) { return natural }
         guard let width = node.intAttr("width").map(CGFloat.init) else { return natural }
         return node.attr("widthType") == "pixel" ? width : 760 * width / 100
+    }
+
+    /// The attached file a block shows on its own line, when it has no
+    /// caption: its `media` node.
+    static func uncaptionedFile(in node: ADFNode) -> ADFNode? {
+        guard node.type == "mediaSingle",
+              !node.children.contains(where: { $0.type == "caption" && !$0.children.isEmpty }),
+              let media = node.children.first(where: { $0.type == "media" }),
+              media.attr("type") == "file"
+        else { return nil }
+        return media
     }
 }
 
@@ -421,6 +472,7 @@ private struct ADFMediaView: View {
     var isThumbnail = false
 
     @Environment(\.adfMedia) private var context
+    @Environment(\.adfConfluenceFiles) private var confluenceFiles
 
     var body: some View {
         if let context, let attachment = context.attachment(for: media) {
@@ -430,6 +482,8 @@ private struct ADFMediaView: View {
             } else {
                 AttachmentChip(attachment: attachment, context: context)
             }
+        } else if let confluenceFiles, media.attr("type") == "file" {
+            ConfluenceFileView(media: media, files: confluenceFiles, aspectRatio: aspectRatio, maxWidth: maxWidth)
         } else {
             Label(media.attr("alt") ?? "Attachment", systemImage: "paperclip")
                 .foregroundStyle(.secondary)
@@ -557,6 +611,180 @@ private struct AttachmentChip: View {
         .buttonStyle(.plain)
         .disabled(isOpening)
         .help("Preview \(attachment.filename)")
+    }
+}
+
+/// A file attached in Confluence, such as an image in a priority's comment:
+/// a small copy of an image, or a chip for any other file, downloaded with
+/// the account's credentials. Either opens full size in Quick Look.
+private struct ConfluenceFileView: View {
+    let media: ADFNode
+    let files: ADFConfluenceFiles
+    /// Width ÷ height from the node, so space is reserved before the image arrives.
+    let aspectRatio: CGFloat?
+    /// The width the image is given where it's shown, which it's never drawn wider than.
+    let maxWidth: CGFloat?
+
+    @State private var attachment: ConfluenceAttachment?
+    @State private var image: PlatformImage?
+    @State private var failure: String?
+    @State private var isOpening = false
+
+    /// The box an image fits in: a glance, not the column's whole width,
+    /// so a few phone screenshots sit side by side.
+    #if os(iOS)
+    private static let tallest: CGFloat = 140
+    private static let widest: CGFloat = 240
+    #else
+    private static let tallest: CGFloat = 180
+    private static let widest: CGFloat = 360
+    #endif
+    /// Pixels on the long side of the copy decoded for one: enough for a
+    /// Retina screen at the largest it shows.
+    private static let previewPixels = 720
+
+    private let shape = RoundedRectangle(cornerRadius: 6)
+
+    private var name: String {
+        attachment?.title ?? media.attr("alt") ?? media.attr("__fileName") ?? "Attachment"
+    }
+
+    /// Whether it's drawn as an image: anything but a file known not to be one.
+    private var isImage: Bool {
+        guard let type = attachment?.mediaType ?? media.attr("__fileMimeType") else { return true }
+        return type.hasPrefix("image/")
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                picture(image)
+            } else if isImage && failure == nil {
+                placeholder
+            } else {
+                chip
+            }
+        }
+        .task(id: "\(files.id)/\(media.attr("id") ?? "")") { await load() }
+    }
+
+    private func picture(_ image: PlatformImage) -> some View {
+        let size = size(for: image.size.height > 0 ? image.size.width / image.size.height : aspectRatio ?? 4 / 3)
+        return Button(action: open) {
+            Image(platformImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size.width, height: size.height)
+                .clipShape(shape)
+                .overlay {
+                    if isOpening {
+                        shape.fill(.black.opacity(0.25))
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                .overlay(shape.strokeBorder(.quaternary))
+                .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .linkPointer()
+        .help(failure ?? "\(name) — click to open")
+        .accessibilityLabel(name)
+        .contextMenu {
+            Button("Open", systemImage: "eye", action: open)
+            Button("Copy Image", systemImage: "doc.on.doc", action: copy)
+        }
+    }
+
+    private var placeholder: some View {
+        let size = size(for: aspectRatio ?? 4 / 3)
+        return shape.fill(.quaternary.opacity(0.5))
+            .overlay { ProgressView().controlSize(.small) }
+            .frame(width: size.width, height: size.height)
+            .help(name)
+    }
+
+    /// A file that isn't an image, or one that couldn't be shown.
+    private var chip: some View {
+        Button(action: open) {
+            HStack(spacing: 6) {
+                if isOpening {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: symbolName).foregroundStyle(.secondary)
+                }
+                Text(name).lineLimit(1)
+                if let size = attachment?.fileSize {
+                    Text(Int64(size), format: .byteCount(style: .file))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .scaledFont(.callout)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.quaternary.opacity(0.5), in: shape)
+        }
+        .buttonStyle(.plain)
+        .disabled(isOpening || attachment == nil)
+        .help(failure ?? "Open \(name)")
+    }
+
+    private var symbolName: String {
+        if attachment == nil { return "exclamationmark.triangle" }
+        let type = attachment?.mediaType ?? ""
+        if failure != nil, type.hasPrefix("image/") { return "photo.badge.exclamationmark" }
+        if type.hasPrefix("image/") { return "photo" }
+        if type.hasPrefix("video/") { return "film" }
+        if type == "application/pdf" { return "doc.richtext" }
+        return "doc"
+    }
+
+    /// Its size for width ÷ height `ratio`: within the box, and no wider
+    /// than it's given.
+    private func size(for ratio: CGFloat) -> CGSize {
+        let widest = min(Self.widest, maxWidth ?? .infinity)
+        let height = min(Self.tallest, widest / max(ratio, 0.01))
+        return CGSize(width: (height * ratio).rounded(), height: height.rounded())
+    }
+
+    private func load() async {
+        do {
+            let found = try await files.attachment(media)
+            attachment = found
+            if found.mediaType?.hasPrefix("image/") ?? true {
+                image = try await PriorityPhotoStore.shared.preview(for: found, using: files.client, maxPixels: Self.previewPixels)
+            }
+            failure = nil
+        } catch where error.isCancellation {
+            return
+        } catch {
+            failure = error.localizedDescription
+        }
+    }
+
+    /// Downloads it full size, if it isn't already, and opens it in Quick Look.
+    private func open() {
+        guard let attachment, !isOpening else { return }
+        isOpening = true
+        Task {
+            defer { isOpening = false }
+            do {
+                files.preview(try await PriorityPhotoStore.shared.file(for: attachment, using: files.client))
+            } catch where error.isCancellation {
+                return
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+    }
+
+    /// Copies the full-size image.
+    private func copy() {
+        guard let attachment else { return }
+        Task {
+            guard let file = try? await PriorityPhotoStore.shared.file(for: attachment, using: files.client),
+                  let full = PlatformImage.decoded(contentsOf: file) else { return }
+            Clipboard.copy(full)
+        }
     }
 }
 

@@ -136,33 +136,28 @@ extension JiraClient {
     /// the page already has (a new version of it would be a PUT). The page
     /// body is left alone; showing the file there is up to the caller.
     func attachToConfluencePage(_ data: Data, filename: String, mimeType: String, pageID: String) async throws -> ConfluenceAttachment {
-        struct Uploaded: Decodable {
-            let results: [Result]
-            struct Result: Decodable {
-                let id: String
-                let title: String
-                let extensions: Extensions?
-                let _links: Links?
-            }
-            struct Extensions: Decodable {
-                let mediaType: String?
-                let fileSize: Int?
-                let fileId: String?
-            }
-            struct Links: Decodable { let download: String? }
-        }
+        struct Uploaded: Decodable { let results: [ConfluenceV1Attachment] }
         let uploaded: Uploaded = try await upload(data, filename: filename, mimeType: mimeType,
                                                   to: "/wiki/rest/api/content/\(pageID)/child/attachment",
                                                   xsrfToken: "nocheck", fields: ["minorEdit": "true"])
         guard let result = uploaded.results.first else { throw JiraError.invalidResponse }
         // The media file id is what the page body points at. When v1 doesn't
         // say it, v2 does.
-        if let fileID = result.extensions?.fileId {
-            return ConfluenceAttachment(id: result.id, title: result.title, mediaType: result.extensions?.mediaType ?? mimeType,
-                                        fileId: fileID, fileSize: result.extensions?.fileSize ?? data.count,
-                                        downloadLink: result._links?.download, pageId: pageID)
+        if let attachment = result.attachment(pageID: pageID, mediaType: mimeType, fileSize: data.count) {
+            return attachment
         }
         return try await confluenceAttachment(id: result.id)
+    }
+
+    /// The files attached to a comment: the images in it, which Confluence
+    /// attaches to the comment rather than its page. v2 can't list a
+    /// comment's attachments, so this is v1's. A comment holds a handful.
+    func confluenceCommentAttachments(commentID: String) async throws -> [ConfluenceAttachment] {
+        struct Page: Decodable { let results: [ConfluenceV1Attachment] }
+        let page: Page = try await get("/wiki/rest/api/content/\(commentID)/child/attachment", query: [
+            URLQueryItem(name: "limit", value: "100"),
+        ])
+        return page.results.compactMap { $0.attachment(pageID: nil) }
     }
 
     func createConfluenceFolder(title: String, spaceID: String, parentID: String) async throws -> ConfluenceFolder {
@@ -233,5 +228,30 @@ extension JiraError {
     var isConflict: Bool {
         if case .http(let status, _) = self { return status == 409 }
         return false
+    }
+}
+
+/// An attachment as Confluence's v1 API shows it, which differs from v2's.
+nonisolated private struct ConfluenceV1Attachment: Decodable, Sendable {
+    let id: String
+    let title: String
+    let extensions: Extensions?
+    let _links: Links?
+
+    struct Extensions: Decodable, Sendable {
+        let mediaType: String?
+        let fileSize: Int?
+        let fileId: String?
+    }
+
+    struct Links: Decodable, Sendable { let download: String? }
+
+    /// As v2 would show it, or nil without the media file id, which pages'
+    /// and comments' `media` nodes point at.
+    func attachment(pageID: String?, mediaType: String? = nil, fileSize: Int? = nil) -> ConfluenceAttachment? {
+        guard let fileID = extensions?.fileId else { return nil }
+        return ConfluenceAttachment(id: id, title: title, mediaType: extensions?.mediaType ?? mediaType,
+                                    fileId: fileID, fileSize: extensions?.fileSize ?? fileSize,
+                                    downloadLink: _links?.download, pageId: pageID)
     }
 }

@@ -1488,6 +1488,7 @@ private struct PriorityComments: View {
     let focusing: CommentSpot?
 
     @Environment(\.openURL) private var openURL
+    @Environment(PriorityDrafts.self) private var drafts
 
     private static let avatarSize: CGFloat = 22
     private static let replyAvatarSize: CGFloat = 18
@@ -1572,7 +1573,9 @@ private struct PriorityComments: View {
                     }
                 }
                 if let document = comment.document {
+                    // Its images are attached to it, and open in the pane's Quick Look.
                     ADFView(node: document)
+                        .environment(\.adfConfluenceFiles, model.files(of: comment) { [drafts] in drafts.previewURL = $0 })
                 }
             }
             .scaledFont(.callout)
