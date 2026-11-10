@@ -8,6 +8,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             TextSizeSection()
+            IssueListsSection()
             Section {
                 ClaudeAPIKeyEditor()
             } header: {
@@ -99,6 +100,22 @@ struct TextSizeSection: View {
             Text("Text")
         } footer: {
             Text(footer)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Whether My Issues and space issue lists load resolved issues too.
+struct IssueListsSection: View {
+    @AppStorage(ResolvedIssues.storageKey, store: .standard) private var loadsResolved = false
+
+    var body: some View {
+        Section {
+            Toggle("Load resolved issues", isOn: $loadsResolved)
+        } header: {
+            Text("Issue Lists")
+        } footer: {
+            Text("My Issues and space lists show only unresolved issues unless this is on. Either way, Done and Won't Do start unticked in a list's status filter, since some Jira sites leave done issues unresolved.")
                 .foregroundStyle(.secondary)
         }
     }

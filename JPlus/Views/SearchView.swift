@@ -127,7 +127,7 @@ struct JQLSearchView: View {
                                          description: Text("Try a different JQL query."))
         } else {
             VStack(spacing: 0) {
-                IssueListView(issues: query.issues, onOpen: onOpenIssue)
+                IssueListView(issues: query.issues, onOpen: onOpenIssue, statusFilterKey: "search")
                 Divider()
                 IssueListFooter(query: query) {
                     Task { await loadMore() }

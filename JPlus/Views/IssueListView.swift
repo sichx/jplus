@@ -45,11 +45,21 @@ struct IssueListView<FilterAccessory: View>: View {
     let onOpen: (String) -> Void
     /// Controls shown to the left of the filter field, such as a status toggle.
     let filterAccessory: FilterAccessory
+    /// Whether statuses in Jira's Done category (Done, Won't Do) start
+    /// unticked in the status filter. Off where the screen has its own
+    /// control for done issues.
+    let hidesDoneByDefault: Bool
 
-    init(issues: [IssueSummary], onOpen: @escaping (String) -> Void,
+    /// - Parameter statusFilterKey: Names this list for saving which statuses
+    ///   are ticked, so the choice survives reloads and relaunches. Saved per
+    ///   account, as each Jira site has its own statuses.
+    init(issues: [IssueSummary], onOpen: @escaping (String) -> Void, statusFilterKey: String,
+         hidesDoneByDefault: Bool = true,
          @ViewBuilder filterAccessory: () -> FilterAccessory) {
         self.issues = issues
         self.onOpen = onOpen
+        self.hidesDoneByDefault = hidesDoneByDefault
+        _savedStatusChoices = AppStorage(wrappedValue: "", "statusFilter.\(statusFilterKey)")
         self.filterAccessory = filterAccessory()
     }
 
@@ -61,6 +71,21 @@ struct IssueListView<FilterAccessory: View>: View {
     @State private var sortOrder = [IssueSummarySortComparator(column: .updated, order: .reverse)]
     @State private var filterText = ""
     @FocusState private var filterFocused: Bool
+    /// Statuses ticked or unticked in the status filter, by name. A status
+    /// not in here is shown unless it's a done one and those start hidden,
+    /// so a status that turns up later follows that default.
+    /// `statusChoices` as JSON, in the account's settings.
+    @AppStorage private var savedStatusChoices: String
+
+    private var statusChoices: [String: Bool] {
+        get {
+            (try? JSONDecoder().decode([String: Bool].self, from: Data(savedStatusChoices.utf8))) ?? [:]
+        }
+        nonmutating set {
+            savedStatusChoices = (try? JSONEncoder().encode(newValue)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        }
+    }
+    @State private var isPickingStatuses = false
     /// Issues whose status or assignee was changed from the context menu,
     /// shown changed until the list is loaded again. Keyed by issue key.
     @State private var changedIssues: [String: IssueSummary] = [:]
@@ -82,8 +107,47 @@ struct IssueListView<FilterAccessory: View>: View {
 
     private var filteredIssues: [IssueSummary] {
         let needle = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !needle.isEmpty else { return currentIssues }
-        return currentIssues.filter { $0.matchesLocalFilter(needle) }
+        let hidden = activeHiddenStatuses
+        guard !needle.isEmpty || !hidden.isEmpty else { return currentIssues }
+        return currentIssues.filter {
+            !hidden.contains($0.fields.status.name) && (needle.isEmpty || $0.matchesLocalFilter(needle))
+        }
+    }
+
+    private func isShown(_ status: JiraIssue.Status, choices: [String: Bool]? = nil) -> Bool {
+        (choices ?? statusChoices)[status.name] ?? !(hidesDoneByDefault && status.isDone)
+    }
+
+    /// Each status in the list with how many issues have it, ordered by
+    /// Jira's category (to do, in progress, done) and then by name.
+    private var statusCounts: [(status: JiraIssue.Status, count: Int)] {
+        var counts: [String: (status: JiraIssue.Status, count: Int)] = [:]
+        for issue in currentIssues {
+            let status = issue.fields.status
+            counts[status.name, default: (status, 0)].count += 1
+        }
+        func rank(_ status: JiraIssue.Status) -> Int {
+            switch status.statusCategory?.key {
+            case "new": 0
+            case "indeterminate": 1
+            case "done": 2
+            default: 1
+            }
+        }
+        return counts.values.sorted {
+            let (l, r) = (rank($0.status), rank($1.status))
+            return l != r ? l < r : $0.status.name.localizedStandardCompare($1.status.name) == .orderedAscending
+        }
+    }
+
+    /// Hidden statuses that some issue in the list actually has.
+    private var activeHiddenStatuses: Set<String> {
+        let choices = statusChoices
+        return Set(currentIssues.lazy.map(\.fields.status).filter { !isShown($0, choices: choices) }.map(\.name))
+    }
+
+    private var isFiltering: Bool {
+        !filterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !activeHiddenStatuses.isEmpty
     }
 
     /// `Table`'s `sortOrder` binding drives header indicators and clicks; row order must be applied locally.
@@ -97,10 +161,23 @@ struct IssueListView<FilterAccessory: View>: View {
             if isCompact { compactAccessoryRow }
             filterBar
             Divider()
-            if isCompact {
-                issueRows
-            } else {
-                issueTable
+            Group {
+                if isCompact {
+                    issueRows
+                } else {
+                    issueTable
+                }
+            }
+            .overlay {
+                if displayedIssues.isEmpty, !currentIssues.isEmpty {
+                    Text(filterText.isEmpty ? "All \(currentIssues.count) issues are hidden by the status filter."
+                                            : "No issues match the filter.")
+                        .scaledFont(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding()
+                        .allowsHitTesting(false)
+                }
             }
         }
         .onChange(of: issues) { changedIssues = [:] }
@@ -163,7 +240,9 @@ struct IssueListView<FilterAccessory: View>: View {
             )
             .frame(maxWidth: filterExpanded || isCompact ? .infinity : 200)
 
-            if filterExpanded, !filterText.isEmpty {
+            statusFilterButton
+
+            if isFiltering {
                 Text("\(displayedIssues.count) of \(issues.count)")
                     .scaledFont(.caption)
                     .foregroundStyle(.secondary)
@@ -173,6 +252,84 @@ struct IssueListView<FilterAccessory: View>: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .animation(.snappy(duration: 0.22), value: filterExpanded)
+    }
+
+    /// Opens a list of checkboxes, one per status in the list, to choose
+    /// which statuses show.
+    private var statusFilterButton: some View {
+        let hiddenCount = activeHiddenStatuses.count
+        return Button {
+            isPickingStatuses.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: hiddenCount > 0
+                      ? "line.3.horizontal.decrease.circle.fill"
+                      : "line.3.horizontal.decrease.circle")
+                if !isCompact { Text("Status") }
+                if hiddenCount > 0 {
+                    Text("\(statusCounts.count - hiddenCount)/\(statusCounts.count)")
+                        .scaledFont(.caption)
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(hiddenCount > 0 ? Color.accentColor : Color.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .disabled(statusCounts.isEmpty)
+        .help("Filter by status")
+        .accessibilityLabel("Filter by status")
+        .popover(isPresented: $isPickingStatuses, arrowEdge: .bottom) {
+            statusChecklist
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var statusChecklist: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(statusCounts, id: \.status.name) { entry in
+                let name = entry.status.name
+                let shown = isShown(entry.status)
+                Button {
+                    statusChoices[name] = !shown
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: shown ? "checkmark.square.fill" : "square")
+                            .foregroundStyle(shown ? Color.accentColor : Color.secondary)
+                        StatusBadge(status: entry.status)
+                        Spacer(minLength: 12)
+                        Text("\(entry.count)")
+                            .scaledFont(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(shown ? .isSelected : [])
+            }
+            Divider().padding(.vertical, 6)
+            HStack {
+                Button("Show All") {
+                    var choices = statusChoices
+                    for entry in statusCounts { choices[entry.status.name] = true }
+                    statusChoices = choices
+                }
+                .disabled(activeHiddenStatuses.isEmpty)
+                Spacer()
+                Button("Hide Done") {
+                    var choices = statusChoices
+                    for entry in statusCounts where entry.status.isDone { choices[entry.status.name] = false }
+                    statusChoices = choices
+                }
+                .disabled(!statusCounts.contains { $0.status.isDone && isShown($0.status) })
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .frame(minWidth: 220)
     }
 
     /// Widths of the columns around Summary, each fitted to its widest cell
@@ -350,8 +507,8 @@ struct IssueListView<FilterAccessory: View>: View {
 }
 
 extension IssueListView where FilterAccessory == EmptyView {
-    init(issues: [IssueSummary], onOpen: @escaping (String) -> Void) {
-        self.init(issues: issues, onOpen: onOpen) { EmptyView() }
+    init(issues: [IssueSummary], onOpen: @escaping (String) -> Void, statusFilterKey: String) {
+        self.init(issues: issues, onOpen: onOpen, statusFilterKey: statusFilterKey) { EmptyView() }
     }
 }
 

@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Open issues in one Jira space (project), most recently updated first.
+/// Issues in one Jira space (project), most recently updated first.
+/// Resolved ones load only with the Load resolved issues setting on.
 struct SpaceIssuesView: View {
     let project: JiraProject
     let onOpenIssue: (String) -> Void
@@ -8,9 +9,10 @@ struct SpaceIssuesView: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.openURL) private var openURL
     @State private var query = IssueQuery()
+    @AppStorage(ResolvedIssues.storageKey, store: .standard) private var loadsResolved = false
 
     private var jql: String {
-        "project = \"\(project.key)\" AND resolution = Unresolved ORDER BY updated DESC"
+        ResolvedIssues.jql("project = \"\(project.key)\"", loadsResolved: loadsResolved, orderBy: "updated DESC")
     }
 
     var body: some View {
@@ -30,6 +32,7 @@ struct SpaceIssuesView: View {
                 }
             }
             .loadTask { if !query.hasRun { await run() } }
+            .onChange(of: loadsResolved) { Task { await run() } }
     }
 
     @ViewBuilder
@@ -46,11 +49,11 @@ struct SpaceIssuesView: View {
             ProgressView("Loading \(project.name)…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if query.hasRun && query.issues.isEmpty {
-            ScaledContentUnavailableView("No Open Issues", systemImage: "checkmark.circle",
-                                         description: Text("\(project.name) has no unresolved issues."))
+            ScaledContentUnavailableView(loadsResolved ? "No Issues" : "No Open Issues", systemImage: "checkmark.circle",
+                                         description: Text(loadsResolved ? "\(project.name) has no issues yet." : "\(project.name) has no unresolved issues."))
         } else {
             VStack(spacing: 0) {
-                IssueListView(issues: query.issues, onOpen: onOpenIssue)
+                IssueListView(issues: query.issues, onOpen: onOpenIssue, statusFilterKey: "space.\(project.key)")
                 Divider()
                 IssueListFooter(query: query) {
                     Task { if let client = session.client { await query.loadMore(using: client) } }

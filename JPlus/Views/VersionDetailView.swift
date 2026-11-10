@@ -320,7 +320,8 @@ struct VersionDetailView: View {
                                          description: Text("Nothing has this fix version yet."))
         } else {
             VStack(spacing: 0) {
-                IssueListView(issues: shownIssues, onOpen: onOpenIssue) {
+                IssueListView(issues: shownIssues, onOpen: onOpenIssue, statusFilterKey: "version",
+                              hidesDoneByDefault: false) {
                     Toggle("Hide completed", isOn: $hideCompleted)
                         .checkboxToggleStyle()
                         .fixedSize()

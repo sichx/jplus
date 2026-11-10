@@ -1,6 +1,21 @@
 import Foundation
 import Observation
 
+/// The "Load resolved issues" setting for My Issues and space issue lists.
+/// Off, those lists ask Jira only for unresolved issues; on, for every issue.
+/// Either way, statuses in the Done category start unticked in the list's
+/// status filter, since some sites leave done issues unresolved.
+enum ResolvedIssues {
+    /// App-wide, in `UserDefaults.standard`: read it with `store: .standard`,
+    /// since the main window's default store is the account's own.
+    static let storageKey = "loadsResolvedIssues"
+
+    /// `base` with `resolution = Unresolved` added unless resolved issues load.
+    static func jql(_ base: String, loadsResolved: Bool, orderBy: String) -> String {
+        (loadsResolved ? base : "\(base) AND resolution = Unresolved") + " ORDER BY \(orderBy)"
+    }
+}
+
 /// Drives a paginated JQL result set for a list view.
 @Observable
 final class IssueQuery {
