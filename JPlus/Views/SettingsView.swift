@@ -96,7 +96,7 @@ struct SettingsPageView: View {
                         .foregroundStyle(.secondary)
                 }
                 #if os(macOS)
-                SendToClaudeSection()
+                SendToAgentSection()
                 #endif
             case .shortcuts:
                 KeyboardShortcutsSection()
@@ -209,22 +209,43 @@ struct IssueListsSection: View {
 }
 
 #if os(macOS)
-/// The terminal app a ticket's Ask AI › Send to Claude… opens.
-struct SendToClaudeSection: View {
-    @AppStorage(ClaudeTerminal.storageKey, store: .standard) private var terminal = ClaudeTerminal.standard
+/// Which coding agents a ticket's Ask AI… can start, and the terminal app
+/// they run in.
+struct SendToAgentSection: View {
+    @AppStorage(AgentTerminal.storageKey, store: .standard) private var terminal = AgentTerminal.standard
 
     var body: some View {
         Section {
+            ForEach(CodingAgent.allCases) { agent in
+                AgentToggle(agent: agent)
+            }
             Picker("Open in", selection: $terminal) {
-                ForEach(ClaudeTerminal.allCases) { option in
+                ForEach(AgentTerminal.allCases) { option in
                     Text(option.isInstalled ? option.title : "\(option.title) (not installed)").tag(option)
                 }
             }
         } header: {
-            Text("Send to Claude")
+            Text("Send to Coding Agent")
         } footer: {
-            Text("A ticket's Ask AI › Send to Claude… asks for a folder, copies the ticket's prompt, then runs claude with it there in a new window of this app. Claude Code must be installed and on your shell's PATH.")
+            Text("Adds Send to… items to a ticket's Ask AI menu. Each asks for a folder and copies the ticket's prompt. Claude and Codex then start in a new window of this terminal app, and need their command-line tools installed and on your shell's PATH. Cursor opens the folder in the Cursor app with the prompt in its chat, ready to send.")
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct AgentToggle: View {
+    let agent: CodingAgent
+    @AppStorage private var isShown: Bool
+
+    init(agent: CodingAgent) {
+        self.agent = agent
+        _isShown = AppStorage(wrappedValue: agent.showsByDefault, agent.showsKey, store: .standard)
+    }
+
+    var body: some View {
+        Toggle(isOn: $isShown) {
+            Text("Send to \(agent.title)")
+            Text(agent.settingsDetail)
         }
     }
 }

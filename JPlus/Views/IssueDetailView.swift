@@ -322,8 +322,15 @@ private struct IssueDetailsPane: View {
     let onChanged: () async -> Void
 
     @State private var copiedPromptToast = false
-    /// Why Send to Claude failed, shown in an alert.
-    @State private var claudeLaunchError: String?
+    /// What happened with Send to Claude, Codex or Cursor when it needs
+    /// saying: why it failed, or that the prompt was copied instead.
+    @State private var agentNotice: (title: String, message: String)?
+    #if os(macOS)
+    // Read only so the Ask AI menu updates when Settings › AI changes them.
+    @AppStorage(CodingAgent.claude.showsKey, store: .standard) private var showsClaude = CodingAgent.claude.showsByDefault
+    @AppStorage(CodingAgent.codex.showsKey, store: .standard) private var showsCodex = CodingAgent.codex.showsByDefault
+    @AppStorage(CodingAgent.cursor.showsKey, store: .standard) private var showsCursor = CodingAgent.cursor.showsByDefault
+    #endif
 
     private var fields: JiraIssue.Fields { issue.fields }
 
@@ -370,7 +377,7 @@ private struct IssueDetailsPane: View {
                     Divider()
                     AskAIMenu(kind: promptKind,
                               onCopy: { copyPrompt(kind: promptKind) },
-                              onSendToClaude: sendToClaudeAction(kind: promptKind))
+                              sendTargets: sendTargets(kind: promptKind))
                 }
 
                 if let attachments = fields.attachments, !attachments.isEmpty {
@@ -394,28 +401,40 @@ private struct IssueDetailsPane: View {
             }
         }
         .animation(.snappy(duration: 0.2), value: copiedPromptToast)
-        .alert("Couldn't Send to Claude",
-               isPresented: Binding(get: { claudeLaunchError != nil }, set: { if !$0 { claudeLaunchError = nil } })) {
+        .alert(agentNotice?.title ?? "",
+               isPresented: Binding(get: { agentNotice != nil }, set: { if !$0 { agentNotice = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text(claudeLaunchError ?? "")
+            Text(agentNotice?.message ?? "")
         }
     }
 
-    /// Nil where Claude Code can't be started from the app (iOS), which
-    /// leaves Ask AI… with Copy Prompt only.
-    private func sendToClaudeAction(kind: IssueAIPromptKind) -> (() -> Void)? {
+    /// Send to Claude…, Codex… and Cursor…, as turned on in Settings › AI.
+    /// None where an agent can't be started from the app (iOS), which leaves
+    /// Ask AI… with Copy Prompt only.
+    private func sendTargets(kind: IssueAIPromptKind) -> [AskAIMenu.SendTarget] {
         #if os(macOS)
-        return {
-            guard let folder = ClaudeCodeLauncher.chooseFolder(for: issue.key) else { return }
-            do {
-                try ClaudeCodeLauncher.launch(prompt: IssueAIPrompts.text(for: issue, kind: kind), in: folder)
-            } catch {
-                claudeLaunchError = error.localizedDescription
+        let shown: [CodingAgent: Bool] = [.claude: showsClaude, .codex: showsCodex, .cursor: showsCursor]
+        return CodingAgent.allCases.filter { shown[$0] ?? false }.map { agent in
+            AskAIMenu.SendTarget(id: agent.rawValue, title: agent.title) {
+                guard let folder = AgentLauncher.chooseFolder(for: issue.key, agent: agent) else { return }
+                let prompt = IssueAIPrompts.text(for: issue, kind: kind)
+                Task {
+                    do {
+                        switch try await AgentLauncher.launch(agent, prompt: prompt, in: folder) {
+                        case .sent:
+                            break
+                        case .promptCopied(let reason):
+                            agentNotice = ("Prompt Copied", reason)
+                        }
+                    } catch {
+                        agentNotice = ("Couldn't Send to \(agent.title)", error.localizedDescription)
+                    }
+                }
             }
         }
         #else
-        return nil
+        return []
         #endif
     }
 
@@ -1031,11 +1050,18 @@ private struct CopyIconButton: View {
     }
 }
 
-/// Ask AI…: copy the ticket's prompt, or (on a Mac) start Claude Code with it.
+/// Ask AI…: copy the ticket's prompt, or (on a Mac) start a coding agent with it.
 private struct AskAIMenu: View {
+    struct SendTarget: Identifiable {
+        let id: String
+        /// "Claude", shown as Send to Claude….
+        let title: String
+        let action: () -> Void
+    }
+
     let kind: IssueAIPromptKind
     let onCopy: () -> Void
-    let onSendToClaude: (() -> Void)?
+    let sendTargets: [SendTarget]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1044,8 +1070,8 @@ private struct AskAIMenu: View {
                 .foregroundStyle(.secondary)
             Menu {
                 Button("Copy Prompt", systemImage: "doc.on.doc", action: onCopy)
-                if let onSendToClaude {
-                    Button("Send to Claude…", systemImage: "terminal", action: onSendToClaude)
+                ForEach(sendTargets) { target in
+                    Button("Send to \(target.title)…", systemImage: "terminal", action: target.action)
                 }
             } label: {
                 Label("Ask AI…", systemImage: "sparkles")
@@ -1053,7 +1079,7 @@ private struct AskAIMenu: View {
             }
             .menuStyle(.button)
             .buttonStyle(.bordered)
-            .help("\(kind.summary): copy a prompt for an AI agent, or start Claude Code with it")
+            .help("\(kind.summary): copy a prompt for an AI agent, or start a coding agent with it")
         }
     }
 }
