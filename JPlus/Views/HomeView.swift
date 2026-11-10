@@ -433,7 +433,7 @@ struct HomeView: View {
             Button("Check for Updates…", systemImage: "arrow.down.circle") { updater?.checkForUpdates() }
             #endif
             Divider()
-            Button("Switch Account…", systemImage: "person.2") { session.switchAccount() }
+            SwitchAccountMenu(session: session)
         } label: {
             HStack(spacing: 10) {
                 AvatarView(user: user, size: 28)

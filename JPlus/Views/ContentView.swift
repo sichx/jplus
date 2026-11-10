@@ -7,7 +7,7 @@ struct ContentView: View {
         @Bindable var session = session
         content
             .sheet(isPresented: $session.isSwitchingAccount) {
-                AccountPickerView(onCancel: { session.isSwitchingAccount = false })
+                AccountPickerView(onCancel: { session.isSwitchingAccount = false; session.notice = nil })
                     .environment(session)
                     #if os(macOS)
                     .frame(minWidth: 620, minHeight: 520)
@@ -32,6 +32,31 @@ struct ContentView: View {
                     .demoLinkNotice()
             }
         }
+    }
+}
+
+/// Switch Account submenu: Manage Accounts…, which opens the account picker to
+/// add, edit or choose any account, then each other saved account to sign
+/// straight in to. Shared by the app menu and the sidebar's account menu.
+struct SwitchAccountMenu: View {
+    let session: SessionStore
+
+    var body: some View {
+        Menu {
+            Button("Manage Accounts…", systemImage: "person.2.badge.gearshape") { session.switchAccount() }
+            let others = session.otherAccounts
+            if !others.isEmpty {
+                Divider()
+                ForEach(others) { account in
+                    Button("\(account.label) (\(account.credentials.siteHost))") {
+                        Task { await session.switchAccount(to: account) }
+                    }
+                }
+            }
+        } label: {
+            Label("Switch Account", systemImage: "person.2")
+        }
+        .disabled(!session.isSignedIn)
     }
 }
 

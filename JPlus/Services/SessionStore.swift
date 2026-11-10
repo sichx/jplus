@@ -45,6 +45,11 @@ final class SessionStore {
 
     var currentAccount: SavedAccount? { accounts.account(id: currentAccountID) }
 
+    /// Saved accounts other than the signed-in one, most recently used first.
+    var otherAccounts: [SavedAccount] {
+        accounts.sortedAccounts.filter { $0.id != currentAccountID }
+    }
+
     /// Cloud id of the signed-in site, fetched once.
     func cloudId() async throws -> String {
         if let cachedCloudId { return cachedCloudId }
@@ -210,6 +215,24 @@ final class SessionStore {
     func switchAccount() {
         guard isSignedIn else { return }
         isSwitchingAccount = true
+    }
+
+    /// Signs straight in to another saved account from the Switch Account
+    /// menu. If that fails, the current account stays signed in and the
+    /// account picker opens with the reason, where the account can be fixed.
+    func switchAccount(to account: SavedAccount) async {
+        guard account.id != currentAccountID else { return }
+        guard !account.tokenRejected else {
+            notice = SignInError.tokenRejected(account.label).localizedDescription
+            isSwitchingAccount = true
+            return
+        }
+        do {
+            try await signIn(to: account)
+        } catch {
+            notice = "Couldn't switch to \(account.label). \(error.localizedDescription)"
+            isSwitchingAccount = true
+        }
     }
 
     /// Returns to the account picker. Saved accounts are kept.
