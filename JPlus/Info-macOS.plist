@@ -12,5 +12,7 @@
 	<true/>
 	<key>SUAutomaticallyUpdate</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>JPlus opens a terminal window to run Claude Code with a ticket's prompt when you choose Send to Claude.</string>
 </dict>
 </plist>

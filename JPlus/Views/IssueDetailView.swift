@@ -312,7 +312,7 @@ private struct IssueContentView: View {
 
 // MARK: - Details pane (right-hand column)
 
-/// Ticket fields, Cursor prompt actions and attachments, shown in the right-hand column.
+/// Ticket fields, the Ask AI menu and attachments, shown in the right-hand column.
 private struct IssueDetailsPane: View {
     let issue: JiraIssue
     /// Nil until loaded, and on a site without a Team field.
@@ -322,6 +322,8 @@ private struct IssueDetailsPane: View {
     let onChanged: () async -> Void
 
     @State private var copiedPromptToast = false
+    /// Why Send to Claude failed, shown in an alert.
+    @State private var claudeLaunchError: String?
 
     private var fields: JiraIssue.Fields { issue.fields }
 
@@ -364,11 +366,11 @@ private struct IssueDetailsPane: View {
                 }
                 .scaledFont(.callout)
 
-                if let promptKind = IssueCursorPromptKind.forIssue(issue) {
+                if let promptKind = IssueAIPromptKind.forIssue(issue) {
                     Divider()
-                    IssueCursorPromptButton(kind: promptKind) {
-                        copyPrompt(kind: promptKind)
-                    }
+                    AskAIMenu(kind: promptKind,
+                              onCopy: { copyPrompt(kind: promptKind) },
+                              onSendToClaude: sendToClaudeAction(kind: promptKind))
                 }
 
                 if let attachments = fields.attachments, !attachments.isEmpty {
@@ -392,10 +394,33 @@ private struct IssueDetailsPane: View {
             }
         }
         .animation(.snappy(duration: 0.2), value: copiedPromptToast)
+        .alert("Couldn't Send to Claude",
+               isPresented: Binding(get: { claudeLaunchError != nil }, set: { if !$0 { claudeLaunchError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(claudeLaunchError ?? "")
+        }
     }
 
-    private func copyPrompt(kind: IssueCursorPromptKind) {
-        let text = IssueCursorPrompts.text(for: issue, kind: kind)
+    /// Nil where Claude Code can't be started from the app (iOS), which
+    /// leaves Ask AI… with Copy Prompt only.
+    private func sendToClaudeAction(kind: IssueAIPromptKind) -> (() -> Void)? {
+        #if os(macOS)
+        return {
+            guard let folder = ClaudeCodeLauncher.chooseFolder(for: issue.key) else { return }
+            do {
+                try ClaudeCodeLauncher.launch(prompt: IssueAIPrompts.text(for: issue, kind: kind), in: folder)
+            } catch {
+                claudeLaunchError = error.localizedDescription
+            }
+        }
+        #else
+        return nil
+        #endif
+    }
+
+    private func copyPrompt(kind: IssueAIPromptKind) {
+        let text = IssueAIPrompts.text(for: issue, kind: kind)
         Clipboard.copy(text)
         copiedPromptToast = true
         Task {
@@ -1006,21 +1031,29 @@ private struct CopyIconButton: View {
     }
 }
 
-private struct IssueCursorPromptButton: View {
-    let kind: IssueCursorPromptKind
-    let action: () -> Void
+/// Ask AI…: copy the ticket's prompt, or (on a Mac) start Claude Code with it.
+private struct AskAIMenu: View {
+    let kind: IssueAIPromptKind
+    let onCopy: () -> Void
+    let onSendToClaude: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Actions")
                 .scaledFont(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
-            Button(action: action) {
-                Label(kind.buttonTitle, systemImage: kind.systemImage)
+            Menu {
+                Button("Copy Prompt", systemImage: "doc.on.doc", action: onCopy)
+                if let onSendToClaude {
+                    Button("Send to Claude…", systemImage: "terminal", action: onSendToClaude)
+                }
+            } label: {
+                Label("Ask AI…", systemImage: "sparkles")
                     .frame(maxWidth: .infinity)
             }
+            .menuStyle(.button)
             .buttonStyle(.bordered)
-            .help("Copy a prompt for an AI agent (paste into chat)")
+            .help("\(kind.summary): copy a prompt for an AI agent, or start Claude Code with it")
         }
     }
 }
