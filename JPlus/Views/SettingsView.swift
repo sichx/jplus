@@ -1,51 +1,138 @@
 import SwiftUI
 
+/// The pages Settings is split into: tabs in the Mac's Settings window, a
+/// list of pages on iPhone and iPad.
+enum SettingsPage: String, CaseIterable, Identifiable {
+    case general, appearance, ai, shortcuts
+
+    /// The Mac Settings window's tab, kept in `UserDefaults.standard` so a
+    /// button elsewhere can open Settings on the page it's about.
+    static let storageKey = "settingsPage"
+
+    /// Opens Settings on the AI page next time, such as from Enable Draft with Claude….
+    static func select(_ page: SettingsPage) {
+        UserDefaults.standard.set(page.rawValue, forKey: storageKey)
+    }
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .appearance: "Appearance"
+        case .ai: "AI"
+        case .shortcuts: "Shortcuts"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general: "gearshape"
+        case .appearance: "textformat.size"
+        case .ai: "sparkles"
+        case .shortcuts: "keyboard"
+        }
+    }
+
+    /// Pages this device shows: keyboard shortcuts only where there's a keyboard.
+    static var available: [SettingsPage] {
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom != .pad { return allCases.filter { $0 != .shortcuts } }
+        #endif
+        return allCases
+    }
+}
+
 struct SettingsView: View {
+    #if os(macOS)
+    @AppStorage(SettingsPage.storageKey, store: .standard) private var page = SettingsPage.general
+    #endif
+
+    var body: some View {
+        #if os(macOS)
+        TabView(selection: $page) {
+            ForEach(SettingsPage.available) { page in
+                SettingsPageView(page: page)
+                    .tabItem { Label(page.title, systemImage: page.systemImage) }
+                    .tag(page)
+            }
+        }
+        .frame(width: 520)
+        #else
+        Form {
+            ForEach(SettingsPage.available) { page in
+                NavigationLink {
+                    SettingsPageView(page: page)
+                        .navigationTitle(page.title)
+                } label: {
+                    Label(page.title, systemImage: page.systemImage)
+                }
+            }
+        }
+        #endif
+    }
+}
+
+/// One page of Settings, as a grouped form.
+struct SettingsPageView: View {
+    let page: SettingsPage
+
+    var body: some View {
+        Form {
+            switch page {
+            case .general:
+                IssueListsSection()
+                StorageSection()
+                AboutSection()
+            case .appearance:
+                TextSizeSection()
+            case .ai:
+                Section {
+                    ClaudeAPIKeyEditor()
+                } header: {
+                    Text("Draft with Claude")
+                } footer: {
+                    Text(ClaudeSharing.settingsFooter)
+                        .foregroundStyle(.secondary)
+                }
+                #if os(macOS)
+                SendToClaudeSection()
+                #endif
+            case .shortcuts:
+                KeyboardShortcutsSection()
+            }
+        }
+        .formStyle(.grouped)
+        #if os(macOS)
+        // Each tab sizes the window to its own content.
+        .fixedSize(horizontal: false, vertical: true)
+        #endif
+    }
+}
+
+/// Version, update checks and the trademark notice.
+struct AboutSection: View {
     #if os(macOS)
     @Environment(AppUpdater.self) private var updater: AppUpdater?
     #endif
 
     var body: some View {
-        Form {
-            TextSizeSection()
-            IssueListsSection()
-            Section {
-                ClaudeAPIKeyEditor()
-            } header: {
-                Text("Draft with Claude")
-            } footer: {
-                Text(ClaudeSharing.settingsFooter)
-                    .foregroundStyle(.secondary)
-            }
+        Section {
+            LabeledContent("Version", value: AppInfo.version)
             #if os(macOS)
-            KeyboardShortcutsSection()
-            #else
-            if UIDevice.current.userInterfaceIdiom == .pad {
-                KeyboardShortcutsSection()
+            if let updater {
+                Toggle("Check for updates automatically", isOn: Binding(
+                    get: { updater.checksAutomatically },
+                    set: { updater.checksAutomatically = $0 }
+                ))
             }
             #endif
-            StorageSection()
-            Section {
-                LabeledContent("Version", value: AppInfo.version)
-                #if os(macOS)
-                if let updater {
-                    Toggle("Check for updates automatically", isOn: Binding(
-                        get: { updater.checksAutomatically },
-                        set: { updater.checksAutomatically = $0 }
-                    ))
-                }
-                #endif
-            } header: {
-                Text("About")
-            } footer: {
-                Text(AppInfo.trademarkNotice)
-                    .foregroundStyle(.secondary)
-            }
+        } header: {
+            Text("About")
+        } footer: {
+            Text(AppInfo.trademarkNotice)
+                .foregroundStyle(.secondary)
         }
-        .formStyle(.grouped)
-        #if os(macOS)
-        .frame(width: 480)
-        #endif
     }
 }
 
@@ -120,6 +207,28 @@ struct IssueListsSection: View {
         }
     }
 }
+
+#if os(macOS)
+/// The terminal app a ticket's Ask AI › Send to Claude… opens.
+struct SendToClaudeSection: View {
+    @AppStorage(ClaudeTerminal.storageKey, store: .standard) private var terminal = ClaudeTerminal.standard
+
+    var body: some View {
+        Section {
+            Picker("Open in", selection: $terminal) {
+                ForEach(ClaudeTerminal.allCases) { option in
+                    Text(option.isInstalled ? option.title : "\(option.title) (not installed)").tag(option)
+                }
+            }
+        } header: {
+            Text("Send to Claude")
+        } footer: {
+            Text("A ticket's Ask AI › Send to Claude… asks for a folder, copies the ticket's prompt, then runs claude with it there in a new window of this app. Claude Code must be installed and on your shell's PATH.")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+#endif
 
 /// A shortcut as listed in Settings.
 struct ShortcutInfo: Identifiable {

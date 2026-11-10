@@ -391,7 +391,10 @@ struct NewTicketView: View {
                 Text(ClaudeSharing.consentMessage)
             }
         } else {
-            Button("Enable Draft with Claude…", systemImage: "sparkles") { openSettings() }
+            Button("Enable Draft with Claude…", systemImage: "sparkles") {
+                SettingsPage.select(.ai)
+                openSettings()
+            }
                 .help("Add a Claude API key in Settings")
         }
     }
