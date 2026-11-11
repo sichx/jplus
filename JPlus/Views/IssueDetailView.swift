@@ -380,10 +380,9 @@ private struct IssueDetailsPane: View {
                               sendTargets: sendTargets(kind: promptKind))
                 }
 
-                if let attachments = fields.attachments, !attachments.isEmpty {
-                    Divider()
-                    AttachmentList(attachments: attachments)
-                }
+                // Always shown, so images and videos can be added to an issue without any.
+                Divider()
+                AttachmentList(issueKey: issue.key, attachments: fields.attachments ?? [], onChanged: onChanged)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -459,8 +458,18 @@ private struct IssueDetailsPane: View {
 }
 
 /// Every file attached to the issue, newest first. Click one to preview it.
+/// Images and videos dropped here, pasted or chosen are uploaded straight away.
 private struct AttachmentList: View {
+    let issueKey: String
     let attachments: [JiraIssue.Attachment]
+    /// Called after an upload, to reload the issue.
+    let onChanged: () async -> Void
+
+    @Environment(SessionStore.self) private var session
+    /// Files on their way up, shown until the issue reloads with them.
+    @State private var uploading: [PendingAttachment] = []
+    @State private var isDropTargeted = false
+    @State private var uploadError: String?
 
     private var newestFirst: [JiraIssue.Attachment] {
         attachments.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }
@@ -468,14 +477,134 @@ private struct AttachmentList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Attachments (\(attachments.count))").scaledFont(.headline)
+            HStack(spacing: 6) {
+                Text(attachments.isEmpty ? "Attachments" : "Attachments (\(attachments.count))").scaledFont(.headline)
+                Spacer(minLength: 4)
+                AddMediaButtons(onAdd: upload, onFailure: { uploadError = $0 })
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+            }
+
+            if attachments.isEmpty && uploading.isEmpty {
+                Text(dropHint)
+                    .scaledFont(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 56)
+                    .multilineTextAlignment(.center)
+                    .background(RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5, 3]))
+                        .foregroundStyle(Color.secondary.opacity(0.4)))
+            }
+
             VStack(alignment: .leading, spacing: 2) {
+                ForEach(uploading) { pending in
+                    UploadingRow(attachment: pending)
+                }
                 ForEach(newestFirst) { attachment in
                     AttachmentRow(attachment: attachment)
                 }
             }
             .padding(.horizontal, -6)
         }
+        .padding(isDropTargeted ? 6 : 0)
+        .background {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.accentColor.opacity(0.08))
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isDropTargeted)
+        .onDrop(of: MediaImport.acceptedTypes, isTargeted: $isDropTargeted) { providers in
+            Task {
+                let found = await MediaImport.load(from: providers)
+                if found.isEmpty {
+                    uploadError = "That doesn't look like an image or video."
+                } else {
+                    upload(found)
+                }
+            }
+            return true
+        }
+        .alert("Couldn't Attach", isPresented: Binding(
+            get: { uploadError != nil },
+            set: { if !$0 { uploadError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(uploadError ?? "")
+        }
+    }
+
+    private var dropHint: String {
+        #if os(macOS)
+        "Drop images or videos here to attach them."
+        #else
+        "Add images or videos from Photos, Files or the clipboard."
+        #endif
+    }
+
+    private func upload(_ items: [PendingAttachment]) {
+        guard let client = session.client else { return }
+        uploading.append(contentsOf: items)
+        Task {
+            var failures: [String] = []
+            for item in items {
+                do {
+                    let data = try await item.contents()
+                    _ = try await client.attach(data, filename: item.filename, mimeType: item.mimeType, to: issueKey)
+                } catch {
+                    failures.append("\(item.filename): \(error.localizedDescription)")
+                }
+                item.discard()
+            }
+            await onChanged()
+            let ids = Set(items.map(\.id))
+            uploading.removeAll { ids.contains($0.id) }
+            if !failures.isEmpty {
+                uploadError = failures.joined(separator: "\n")
+            }
+        }
+    }
+}
+
+/// An image or video being uploaded, in place of its row until it's on the issue.
+private struct UploadingRow: View {
+    let attachment: PendingAttachment
+
+    @State private var thumbnail: PlatformImage?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Group {
+                if let thumbnail {
+                    Image(platformImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Image(systemName: attachment.isVideo ? "film" : "photo")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(.quaternary.opacity(0.5))
+                }
+            }
+            .frame(width: 36, height: 36)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .opacity(0.6)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(attachment.filename)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("Uploading…")
+                    .scaledFont(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            ProgressView().controlSize(.small)
+        }
+        .scaledFont(.callout)
+        .padding(6)
+        .task(id: attachment.id) { thumbnail = attachment.thumbnail }
     }
 }
 

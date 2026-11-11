@@ -1,13 +1,12 @@
 #if os(macOS)
 import AppKit
-#else
-import PhotosUI
 #endif
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Create an issue from a screenshot: drop/paste/choose an image, fill in
-/// the fields (or let Claude draft them), create, attach, open.
+/// Create an issue from screenshots and recordings: drop/paste/choose images
+/// and videos, fill in the fields (or let Claude draft them from the first
+/// image), create, attach, open.
 struct NewTicketView: View {
     let suggestedProjectKey: String?
     let onCreated: (String) -> Void
@@ -19,7 +18,8 @@ struct NewTicketView: View {
     @AppStorage("newTicketProjectKey") private var projectKey = "VPE"
     @AppStorage("newTicketIssueTypeName") private var preferredTypeName = "Bug"
 
-    @State private var screenshot: Screenshot?
+    /// Images and videos to attach once the ticket is created, in order.
+    @State private var attachments: [PendingAttachment] = []
     @State private var projects: [JiraProject] = []
     @State private var issueTypes: [JiraIssueType] = []
     @State private var issueTypeId = ""
@@ -41,7 +41,6 @@ struct NewTicketView: View {
     @State private var createFieldsKey: String?
 
     @State private var isDropTargeted = false
-    @State private var showingFileImporter = false
     @State private var isLoadingTypes = false
     @State private var isDrafting = false
     /// Asking before the first draft sends anything to Anthropic.
@@ -54,12 +53,13 @@ struct NewTicketView: View {
     /// Local ⌘V handler, installed while this screen is visible.
     #if os(macOS)
     @State private var pasteMonitor: Any?
-    #else
-    @State private var photoItem: PhotosPickerItem?
     #endif
 
     /// The team new tickets are given unless another is picked.
     private static let defaultTeamName = "App Team"
+
+    /// The image Claude drafts from: the first one added.
+    private var draftImage: Screenshot? { attachments.lazy.compactMap(\.screenshot).first }
 
     private var project: JiraProject? { projects.first { $0.key == projectKey } }
 
@@ -94,7 +94,7 @@ struct NewTicketView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                screenshotWell
+                mediaWell
                 fields
                 actions
                 if let errorMessage {
@@ -109,20 +109,15 @@ struct NewTicketView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .navigationTitle("New Ticket")
-        .onDrop(of: ScreenshotImport.acceptedTypes, isTargeted: $isDropTargeted) { providers in
-            Task { await importScreenshot(from: providers) }
+        .onDrop(of: MediaImport.acceptedTypes, isTargeted: $isDropTargeted) { providers in
+            Task { await importMedia(from: providers) }
             return true
         }
         #if os(macOS)
-        .onPasteCommand(of: ScreenshotImport.acceptedTypes) { providers in
-            Task { await importScreenshot(from: providers) }
+        .onPasteCommand(of: MediaImport.acceptedTypes) { providers in
+            Task { await importMedia(from: providers) }
         }
         #endif
-        .fileImporter(isPresented: $showingFileImporter, allowedContentTypes: [.image]) { result in
-            if case .success(let url) = result {
-                setScreenshot(ScreenshotImport.load(url: url), failureMessage: "That file isn't an image the app can read.")
-            }
-        }
         .loadTask { await loadProjects() }
         .loadTask { await loadDefaultTeam() }
         .task(id: projectKey) { await loadIssueTypes() }
@@ -131,77 +126,68 @@ struct NewTicketView: View {
         #if os(macOS)
         .onAppear(perform: installPasteMonitor)
         .onDisappear(perform: removePasteMonitor)
-        #else
-        .onChange(of: photoItem) {
-            guard let photoItem else { return }
-            Task { await importPhoto(photoItem) }
-        }
         #endif
     }
 
-    // MARK: - Screenshot
+    // MARK: - Images and videos
 
-    private var screenshotWell: some View {
+    private var mediaWell: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(style: StrokeStyle(lineWidth: isDropTargeted ? 2 : 1, dash: screenshot == nil ? [6, 4] : []))
+                    .strokeBorder(style: StrokeStyle(lineWidth: isDropTargeted ? 2 : 1, dash: attachments.isEmpty ? [6, 4] : []))
                     .foregroundStyle(isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.5))
                     .background(
                         RoundedRectangle(cornerRadius: 10)
                             .fill(isDropTargeted ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.05))
                     )
 
-                if let screenshot, let image = screenshot.image {
-                    Image(platformImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .padding(8)
-                } else {
+                if attachments.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "photo.badge.plus")
                             .scaledFont(.system(size: 34))
                             .foregroundStyle(.secondary)
                         #if os(macOS)
-                        Text("Drop a screenshot here")
+                        Text("Drop screenshots or videos here")
                             .scaledFont(.headline)
-                        Text("or paste with ⌘V, or choose a file. Tip: ⌃⇧⌘4 captures a region to the clipboard.")
+                        Text("or paste with ⌘V, or choose files. Tip: ⌃⇧⌘4 captures a region to the clipboard, ⇧⌘5 records the screen.")
                             .scaledFont(.callout)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                         #else
-                        Text("Add a screenshot")
+                        Text("Add screenshots or videos")
                             .scaledFont(.headline)
-                        Text("Choose one from Photos or Files, or paste one you've copied.")
+                        Text("Choose them from Photos or Files, or paste one you've copied.")
                             .scaledFont(.callout)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                         #endif
                     }
                     .padding()
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12)], alignment: .leading, spacing: 12) {
+                            ForEach(attachments) { attachment in
+                                PendingAttachmentTile(attachment: attachment) { remove(attachment) }
+                            }
+                        }
+                        .padding(12)
+                    }
+                    .disabled(isCreating)
                 }
             }
-            .frame(height: 260)
+            .frame(height: attachments.isEmpty ? 200 : 260)
             .animation(.easeInOut(duration: 0.15), value: isDropTargeted)
 
             HStack(spacing: 10) {
-                #if os(iOS)
-                PhotosPicker(selection: $photoItem, matching: .images) {
-                    Label("Photos", systemImage: "photo")
-                }
-                #endif
-                Button("Choose…", systemImage: "folder") { showingFileImporter = true }
-                Button("Paste", systemImage: "doc.on.clipboard") {
-                    setScreenshot(ScreenshotImport.loadFromPasteboard(), failureMessage: "The clipboard doesn't contain an image.")
-                }
-                .keyboardShortcut("v", modifiers: [.command, .shift])
-                if let screenshot {
-                    Button("Remove", systemImage: "xmark.circle") { self.screenshot = nil }
-                    Text("\(screenshot.filename) · \(screenshot.sizeDescription)")
-                        .scaledFont(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                AddMediaButtons(onAdd: add, onFailure: { errorMessage = $0 }, pasteShortcut: true)
+                    .disabled(isCreating)
+                if !attachments.isEmpty {
+                    Button("Remove All", systemImage: "xmark.circle") {
+                        attachments.forEach { $0.discard() }
+                        attachments = []
+                    }
+                    .disabled(isCreating)
                 }
                 Spacer(minLength: 8)
                 draftButton
@@ -348,7 +334,7 @@ struct NewTicketView: View {
             Button {
                 Task { await create() }
             } label: {
-                Text(screenshot == nil ? "Create Ticket" : "Create Ticket with Screenshot")
+                Text(createTitle)
                     .frame(minWidth: 120)
             }
             .buttonStyle(.borderedProminent)
@@ -358,7 +344,15 @@ struct NewTicketView: View {
         }
     }
 
-    /// Draft with Claude, shown beside the screenshot controls.
+    private var createTitle: String {
+        switch attachments.count {
+        case 0: "Create Ticket"
+        case 1: attachments[0].isVideo ? "Create Ticket with Video" : "Create Ticket with Screenshot"
+        default: "Create Ticket with \(attachments.count) Attachments"
+        }
+    }
+
+    /// Draft with Claude, shown beside the attachment controls.
     @ViewBuilder
     private var draftButton: some View {
         if settings.hasClaudeAPIKey {
@@ -379,8 +373,8 @@ struct NewTicketView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(screenshot == nil || isDrafting || isCreating)
-            .help(screenshot == nil ? "Add a screenshot first" : "Fill summary, description and type from the screenshot")
+            .disabled(draftImage == nil || isDrafting || isCreating)
+            .help(draftImage == nil ? "Add a screenshot first" : "Fill summary, description and type from the first screenshot")
             .alert("Send to Anthropic?", isPresented: $confirmsClaudeSharing) {
                 Button("Send") {
                     allowsClaudeSharing = true
@@ -500,8 +494,8 @@ struct NewTicketView: View {
     // MARK: - ⌘V
 
     /// ⌘V normally goes to whichever text field has focus, and a text field
-    /// can't take an image. This catches ⌘V first and attaches the image when
-    /// the clipboard holds one, letting ordinary text pastes through.
+    /// can't take an image. This catches ⌘V first and attaches the images or
+    /// videos the clipboard holds, letting ordinary text pastes through.
     private func installPasteMonitor() {
         guard pasteMonitor == nil else { return }
         pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -509,8 +503,15 @@ struct NewTicketView: View {
             guard modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "v" else { return event }
             let handled = MainActor.assumeIsolated { () -> Bool in
                 let isEditingText = event.window?.firstResponder is NSText
-                guard ScreenshotImport.shouldPasteImage(isEditingText: isEditingText) else { return false }
-                setScreenshot(ScreenshotImport.loadFromPasteboard(), failureMessage: "The clipboard image couldn't be read.")
+                guard !isCreating, MediaImport.shouldPaste(isEditingText: isEditingText) else { return false }
+                Task {
+                    let found = await MediaImport.loadFromPasteboard()
+                    if found.isEmpty {
+                        errorMessage = "The clipboard image or video couldn't be read."
+                    } else {
+                        add(found)
+                    }
+                }
                 return true
             }
             return handled ? nil : event
@@ -521,38 +522,34 @@ struct NewTicketView: View {
         if let pasteMonitor { NSEvent.removeMonitor(pasteMonitor) }
         pasteMonitor = nil
     }
-    #else
-    // MARK: - Photos
-
-    private func importPhoto(_ item: PhotosPickerItem) async {
-        defer { photoItem = nil }
-        let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "png"
-        let data = try? await item.loadTransferable(type: Data.self)
-        setScreenshot(data.flatMap { Screenshot(data: $0, filename: "Photo.\(ext)") },
-                      failureMessage: "That photo couldn't be read.")
-    }
     #endif
 
-    // MARK: - Screenshot import
+    // MARK: - Adding and removing
 
-    private func importScreenshot(from providers: [NSItemProvider]) async {
-        let shot = await ScreenshotImport.load(from: providers)
-        setScreenshot(shot, failureMessage: "That doesn't look like an image.")
+    private func importMedia(from providers: [NSItemProvider]) async {
+        guard !isCreating else { return }
+        let found = await MediaImport.load(from: providers)
+        if found.isEmpty {
+            errorMessage = "That doesn't look like an image or video."
+        } else {
+            add(found)
+        }
     }
 
-    private func setScreenshot(_ shot: Screenshot?, failureMessage: String) {
-        if let shot {
-            screenshot = shot
-            errorMessage = nil
-        } else {
-            errorMessage = failureMessage
-        }
+    private func add(_ items: [PendingAttachment]) {
+        attachments.append(contentsOf: items)
+        errorMessage = nil
+    }
+
+    private func remove(_ attachment: PendingAttachment) {
+        attachment.discard()
+        attachments.removeAll { $0.id == attachment.id }
     }
 
     // MARK: - Draft
 
     private func draftWithClaude() async {
-        guard let screenshot, let png = screenshot.pngForAnalysis() else { return }
+        guard let draftImage, let png = draftImage.pngForAnalysis() else { return }
         guard settings.hasClaudeAPIKey else {
             errorMessage = ClaudeError.missingAPIKey.localizedDescription
             return
@@ -601,22 +598,32 @@ struct NewTicketView: View {
             return
         }
 
-        if let screenshot {
-            progress = "Uploading screenshot to \(created.key)…"
+        var failures: [String] = []
+        for (index, attachment) in attachments.enumerated() {
+            progress = attachments.count == 1
+                ? "Uploading \(attachment.isVideo ? "video" : "screenshot") to \(created.key)…"
+                : "Uploading \(index + 1) of \(attachments.count) to \(created.key)…"
             do {
-                try await client.attach(screenshot.data, filename: screenshot.filename, mimeType: screenshot.mimeType, to: created.key)
+                let data = try await attachment.contents()
+                _ = try await client.attach(data, filename: attachment.filename, mimeType: attachment.mimeType, to: created.key)
             } catch {
-                // The issue exists; report the partial failure rather than losing it.
-                errorMessage = "Created \(created.key), but the screenshot upload failed: \(error.localizedDescription)"
-                onCreated(created.key)
-                return
+                failures.append("\(attachment.filename): \(error.localizedDescription)")
             }
         }
+        if !failures.isEmpty {
+            // The issue exists; report the partial failure rather than losing it.
+            // The files are kept so they can be added again from the ticket.
+            errorMessage = "Created \(created.key), but \(failures.count == 1 ? "an upload" : "\(failures.count) uploads") failed: "
+                + failures.joined(separator: "; ")
+            onCreated(created.key)
+            return
+        }
 
+        attachments.forEach { $0.discard() }
         summary = ""
         description = ""
         notes = ""
-        self.screenshot = nil
+        attachments = []
         onCreated(created.key)
     }
 }

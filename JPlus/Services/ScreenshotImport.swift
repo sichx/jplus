@@ -143,7 +143,7 @@ enum ScreenshotImport {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
-    static func pngData(from cgImage: CGImage) -> Data? {
+    nonisolated static func pngData(from cgImage: CGImage) -> Data? {
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, cgImage, nil)
@@ -151,7 +151,7 @@ enum ScreenshotImport {
         return data as Data
     }
 
-    private static func defaultFilename(for type: UTType) -> String {
+    static func defaultFilename(for type: UTType) -> String {
         let stamp = Date.now.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).second(.twoDigits))
             .replacingOccurrences(of: ":", with: ".")
             .replacingOccurrences(of: "/", with: "-")
@@ -159,7 +159,7 @@ enum ScreenshotImport {
         return "Screenshot \(stamp).\(ext)"
     }
 
-    private static func loadFileURL(from provider: NSItemProvider) async -> URL? {
+    static func loadFileURL(from provider: NSItemProvider) async -> URL? {
         await withCheckedContinuation { continuation in
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
                 if let data = item as? Data {
@@ -173,7 +173,7 @@ enum ScreenshotImport {
         }
     }
 
-    private static func loadData(from provider: NSItemProvider, type: UTType) async -> Data? {
+    static func loadData(from provider: NSItemProvider, type: UTType) async -> Data? {
         await withCheckedContinuation { continuation in
             provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
                 continuation.resume(returning: data)
