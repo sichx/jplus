@@ -112,6 +112,27 @@ nonisolated final class DemoServer: @unchecked Sendable {
             return ok(["count": state.issues.filter { jql.matches($0, in: state, currentUser: me) }.count])
         }
 
+        // Jira: bulk move, used to make an issue a sub-task. Done at once.
+        if match(method, parts, "POST rest/api/3/bulk/issues/move") != nil {
+            let mapping = json["targetToSourcesMapping"] as? [String: Any] ?? [:]
+            for (target, value) in mapping {
+                let parts = target.split(separator: ",").map(String.init)
+                guard parts.count == 3, let type = state.issueTypes.first(where: { $0.id == parts[1] }),
+                      let parent = issue(parts[2]) else { return error(400, "Pick a valid parent and issue type.") }
+                let keys = (value as? [String: Any])?["issueIdsOrKeys"] as? [String] ?? []
+                for key in keys {
+                    _ = edit(key) { issue in
+                        issue.type = type.name
+                        issue.parent = parent.key
+                    }
+                }
+            }
+            return ok(["taskId": "demo-move"], status: 201)
+        }
+        if match(method, parts, "GET rest/api/3/bulk/queue/*") != nil {
+            return ok(["taskId": "demo-move", "status": "COMPLETE", "progressPercent": 100, "failedAccessibleIssues": [:] as [String: Any]])
+        }
+
         // Jira: one issue
         if match(method, parts, "POST rest/api/3/issue") != nil {
             return createIssue(json)
@@ -368,6 +389,9 @@ nonisolated final class DemoServer: @unchecked Sendable {
             if let reporter = (fields["reporter"] as? [String: Any])?["accountId"] as? String { issue.reporter = reporter }
             if let id = (fields["priority"] as? [String: Any])?["id"] as? String, let index = Int(id), state.priorities.indices.contains(index - 1) {
                 issue.priority = state.priorities[index - 1]
+            }
+            if let parent = fields["parent"] as? [String: Any] {
+                issue.parent = (parent["key"] as? String).flatMap { self.issue($0)?.key }
             }
             if fields.keys.contains(DemoData.teamFieldID) {
                 issue.team = fields[DemoData.teamFieldID] as? String

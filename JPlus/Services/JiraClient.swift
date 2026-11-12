@@ -212,6 +212,90 @@ struct JiraClient: Sendable {
         try await put("/rest/api/3/issue/\(key)", json: ["fields": ["summary": summary]])
     }
 
+    /// Puts an issue under another, or takes it out from under its parent
+    /// when `parentKey` is nil. Jira can accept an edit without making it
+    /// (when the field isn't on the edit screen), so the issue is read back.
+    func setParent(key parentKey: String?, onIssue key: String) async throws {
+        let parent: [String: Any] = parentKey.map { ["key": $0] } ?? ["id": NSNull()]
+        try await put("/rest/api/3/issue/\(key)", json: ["fields": ["parent": parent]])
+        struct Check: Decodable {
+            let fields: Fields
+            struct Fields: Decodable { let parent: JiraIssue.IssueRef? }
+        }
+        let check: Check = try await get("/rest/api/3/issue/\(key)", query: [URLQueryItem(name: "fields", value: "parent")])
+        guard check.fields.parent?.key.uppercased() == parentKey?.uppercased() else {
+            throw JiraError.http(status: 200, message: parentKey == nil
+                ? "Jira didn't remove the parent. The Parent field may not be on this issue's edit screen."
+                : "Jira didn't change the parent. The Parent field may not be on this issue's edit screen.")
+        }
+    }
+
+    /// Makes an issue a sub-task of `parentKey`, or moves a sub-task to
+    /// another parent. An ordinary edit can't change an issue's level, so
+    /// this uses Jira's bulk move, which runs as a task; it waits for the
+    /// task, then reads the issue back to check the move happened.
+    func makeSubtask(_ key: String, of parentKey: String, projectKey: String, subtaskTypeID: String) async throws {
+        struct Submitted: Decodable { let taskId: String }
+        let submitted: Submitted = try await post("/rest/api/3/bulk/issues/move", json: [
+            "sendBulkNotification": true,
+            "targetToSourcesMapping": [
+                "\(projectKey),\(subtaskTypeID),\(parentKey)": [
+                    "issueIdsOrKeys": [key],
+                    // Fill required fields and map the status as Jira's own Move would.
+                    "inferFieldDefaults": true,
+                    "inferStatusDefaults": true,
+                    "inferSubtaskTypeDefault": true,
+                    // True fails with a 500 on sites with classification levels.
+                    "inferClassificationDefaults": false,
+                ] as [String: Any],
+            ],
+        ])
+        let failures = try await waitForBulkTask(submitted.taskId)
+
+        struct Check: Decodable {
+            let fields: Fields
+            struct Fields: Decodable { let parent: JiraIssue.IssueRef? }
+        }
+        let check: Check = try await get("/rest/api/3/issue/\(key)", query: [URLQueryItem(name: "fields", value: "parent")])
+        guard check.fields.parent?.key.uppercased() == parentKey.uppercased() else {
+            throw JiraError.http(status: 200, message: failures.isEmpty
+                ? "Jira didn't move \(key) under \(parentKey)."
+                : failures.joined(separator: " "))
+        }
+    }
+
+    /// Waits for a bulk operation to finish, returning Jira's reasons for
+    /// any issue it couldn't change. Throws if the task fails or runs long.
+    private func waitForBulkTask(_ taskID: String) async throws -> [String] {
+        struct Progress: Decodable {
+            let status: String
+            let failures: [String]
+
+            enum CodingKeys: String, CodingKey { case status, failedAccessibleIssues }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                status = try container.decode(String.self, forKey: .status)
+                // Issue id to its error messages; read loosely, as only the text matters.
+                let failed = (try? container.decodeIfPresent([String: [String]].self, forKey: .failedAccessibleIssues)) ?? nil
+                failures = failed?.values.flatMap { $0 } ?? []
+            }
+        }
+        for _ in 0..<60 {
+            let progress: Progress = try await get("/rest/api/3/bulk/queue/\(taskID)")
+            switch progress.status {
+            case "COMPLETE":
+                return progress.failures
+            case "FAILED", "DEAD", "CANCELLED", "CANCEL_REQUESTED":
+                throw JiraError.http(status: 200, message: progress.failures.isEmpty
+                    ? "Jira couldn't move the issue." : progress.failures.joined(separator: " "))
+            default:
+                try await Task.sleep(for: .seconds(1))
+            }
+        }
+        throw JiraError.http(status: 200, message: "Jira is still moving the issue. Refresh in a minute to see it.")
+    }
+
     /// Assigns an issue, or unassigns it when `accountID` is nil.
     func setAssignee(accountID: String?, onIssue key: String) async throws {
         try await put("/rest/api/3/issue/\(key)/assignee", json: ["accountId": accountID ?? NSNull()])

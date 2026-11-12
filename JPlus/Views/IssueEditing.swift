@@ -775,6 +775,367 @@ struct TeamPicker: View {
     }
 }
 
+// MARK: - Parent
+
+/// What the Parent picker chose.
+enum ParentChoice: Hashable {
+    /// Put the issue under an issue one level up, such as an epic.
+    case parent(String)
+    /// Make the issue a sub-task of this key, or move a sub-task to it,
+    /// as the given sub-task type.
+    case subtask(of: String, typeID: String)
+    case remove
+}
+
+/// Search box and the issues this one can go under: issues one level up,
+/// such as epics for a story, and issues in its project it can become a
+/// sub-task of. Typing a key finds that issue. Return picks the first match.
+struct ParentPicker: View {
+    let issue: JiraIssue
+    @Binding var isPresented: Bool
+    /// If it throws, the picker stays open and shows the error.
+    let onChoose: (ParentChoice) async throws -> Void
+
+    /// The project's issue types that matter here, loaded once.
+    private struct Types {
+        /// Types one level up, such as Epic for a story.
+        var upper: [String]
+        /// Types a sub-task can belong to, if this issue can be one.
+        var standard: [String]
+        var subtaskTypeID: String?
+    }
+
+    @Environment(SessionStore.self) private var session
+    @State private var query = ""
+    @State private var types: Types?
+    @State private var upperResults: [IssueSummary]?
+    @State private var standardResults: [IssueSummary]?
+    /// A typed key that exists but can't be used, and why; shown in place of results.
+    @State private var keyProblem: String?
+    @State private var searchError: String?
+    @State private var saveError: String?
+    @State private var saving: ParentChoice?
+    /// The issue picked to become this one's parent, waiting for Make Sub-task.
+    @State private var confirming: IssueSummary?
+    @FocusState private var isSearchFocused: Bool
+
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
+    private var currentKey: String? { issue.fields.parent?.key }
+    private var level: Int { issue.fields.issueType.hierarchyLevel ?? (issue.fields.issueType.subtask == true ? -1 : 0) }
+    private var isSubtask: Bool { level < 0 }
+    private var typeName: String { issue.fields.issueType.name }
+
+    /// Sub-tasks go under standard issues; a standard issue can become a
+    /// sub-task unless it has sub-tasks of its own.
+    private var offersSubtask: Bool { isSubtask || (level == 0 && (issue.fields.subtasks ?? []).isEmpty) }
+    private var offersUpper: Bool { !isSubtask }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let confirming {
+                confirmation(confirming)
+            } else {
+                search
+            }
+            if let saveError {
+                Divider()
+                ErrorLabel(message: saveError).padding(10)
+            }
+        }
+        .frame(width: 360)
+        .task(id: trimmedQuery) { await runSearch() }
+    }
+
+    private var search: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            TextField("Search by title or key", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .focused($isSearchFocused)
+                .onSubmit {
+                    if let first = upperResults?.first {
+                        Task { await choose(.parent(first.key)) }
+                    } else if let first = standardResults?.first {
+                        pickStandard(first)
+                    }
+                }
+                .padding(10)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    if trimmedQuery.isEmpty, currentKey != nil, !isSubtask {
+                        PickerRow {
+                            Task { await choose(.remove) }
+                        } content: {
+                            Text("Remove Parent").foregroundStyle(.secondary)
+                            Spacer(minLength: 4)
+                            if saving == .remove { ProgressView().controlSize(.mini) }
+                        }
+                    }
+                    let upper = upperResults ?? []
+                    let standard = standardResults ?? []
+                    if !upper.isEmpty {
+                        if !standard.isEmpty { header(types?.upper.first.map { $0 + "s" } ?? "Parents") }
+                        ForEach(upper) { candidate in
+                            row(candidate, isSaving: saving == .parent(candidate.key)) {
+                                Task { await choose(.parent(candidate.key)) }
+                            }
+                        }
+                    }
+                    if !standard.isEmpty {
+                        if !upper.isEmpty || !isSubtask { header(isSubtask ? "Move to" : "Make a sub-task of") }
+                        ForEach(standard) { candidate in
+                            row(candidate, isSaving: { if case .subtask(of: candidate.key, _) = saving { true } else { false } }()) {
+                                pickStandard(candidate)
+                            }
+                        }
+                    }
+                    if upperResults == nil || standardResults == nil, searchError == nil, keyProblem == nil {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Searching…").foregroundStyle(.secondary)
+                        }
+                        .padding(8)
+                    } else if upper.isEmpty, standard.isEmpty, searchError == nil {
+                        Text(emptyMessage)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(8)
+                    }
+                    if let searchError { ErrorLabel(message: searchError).padding(8) }
+                }
+                .padding(6)
+            }
+            .frame(height: 320)
+            .disabled(saving != nil)
+        }
+        .onAppear { isSearchFocused = true }
+    }
+
+    private func header(_ title: String) -> some View {
+        Text(title)
+            .scaledFont(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+    }
+
+    private func row(_ candidate: IssueSummary, isSaving: Bool, action: @escaping () -> Void) -> some View {
+        PickerRow(action: action) {
+            IssueTypeBadge(name: candidate.fields.issueType.name, iconOnly: true)
+            Text(candidate.key).monospaced().fixedSize()
+            Text(candidate.fields.summary).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            if isSaving {
+                ProgressView().controlSize(.mini)
+            } else if candidate.key == currentKey {
+                Image(systemName: "checkmark").foregroundStyle(.tint)
+            }
+        }
+        .help(candidate.fields.summary)
+    }
+
+    /// Making an issue a sub-task changes its type, so that's confirmed first;
+    /// moving a sub-task to another parent isn't.
+    private func pickStandard(_ candidate: IssueSummary) {
+        guard let typeID = types?.subtaskTypeID else { return }
+        if isSubtask {
+            Task { await choose(.subtask(of: candidate.key, typeID: typeID)) }
+        } else {
+            saveError = nil
+            confirming = candidate
+        }
+    }
+
+    private func confirmation(_ parent: IssueSummary) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Make \(issue.key) a sub-task of \(parent.key)?")
+                .scaledFont(.headline)
+            Text(parent.fields.summary)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Text(confirmationDetail)
+                .scaledFont(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel") { confirming = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button {
+                    guard let typeID = types?.subtaskTypeID else { return }
+                    Task { await choose(.subtask(of: parent.key, typeID: typeID)) }
+                } label: {
+                    if saving != nil {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Make Sub-task")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+            .disabled(saving != nil)
+        }
+        .padding(14)
+    }
+
+    private var confirmationDetail: String {
+        var text = "Its type changes from \(typeName) to sub-task, and Jira may change its status to fit."
+        if let epic = currentKey {
+            text += " It leaves \(epic) and follows its new parent instead."
+        }
+        return text
+    }
+
+    private var emptyMessage: String {
+        if let keyProblem { return keyProblem }
+        if types.map({ $0.upper.isEmpty && ($0.standard.isEmpty || $0.subtaskTypeID == nil) }) == true {
+            return "Nothing in \(issue.projectKey) can be the parent of \(Self.withArticle(typeName))."
+        }
+        if trimmedQuery.isEmpty { return "No open issues in \(issue.projectKey) to put this under" }
+        return "Nothing matches “\(trimmedQuery)”"
+    }
+
+    // MARK: Search
+
+    private func runSearch() async {
+        guard let client = session.client else { return }
+        let text = trimmedQuery
+        // Waits for a pause in typing; a newer query cancels this one.
+        if !text.isEmpty {
+            try? await Task.sleep(for: .milliseconds(250))
+            if Task.isCancelled { return }
+        }
+        do {
+            let types = try await loadTypes(using: client)
+            if Task.isCancelled { return }
+            if let key = IssueKey.parse(text) {
+                try await lookUp(key, types: types, using: client)
+                return
+            }
+            keyProblem = nil
+            let words = Self.searchWords(text)
+            async let upper = candidates(ofTypes: offersUpper ? types.upper : [], words: words, limit: 15, using: client)
+            async let standard = candidates(ofTypes: offersSubtask && types.subtaskTypeID != nil ? types.standard : [],
+                                            words: words, limit: 25, using: client)
+            let (foundUpper, foundStandard) = try await (upper, standard)
+            if Task.isCancelled { return }
+            upperResults = foundUpper
+            standardResults = foundStandard
+            searchError = nil
+        } catch {
+            if Task.isCancelled { return }
+            upperResults = []
+            standardResults = []
+            // JQL rejects a key that doesn't exist (400), which just means no match.
+            if let key = IssueKey.parse(text), case JiraError.http(status: 400, _) = error {
+                keyProblem = "There's no \(key), or you can't see it."
+                searchError = nil
+            } else {
+                keyProblem = nil
+                searchError = "Couldn't search: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Open issues of these types in the project, or those whose title matches.
+    private func candidates(ofTypes names: [String], words: String, limit: Int, using client: JiraClient) async throws -> [IssueSummary] {
+        guard !names.isEmpty else { return [] }
+        var jql = "project = \(Self.quoted(issue.projectKey)) AND issuetype in (\(names.map(Self.quoted).joined(separator: ", ")))"
+            + " AND key != \(Self.quoted(issue.key))"
+        jql += words.isEmpty ? " AND statusCategory != Done" : " AND summary ~ \(Self.quoted(words + "*"))"
+        jql += " ORDER BY updated DESC"
+        return try await client.search(jql: jql, maxResults: limit).issues
+    }
+
+    /// Shows a typed key in the section it fits, or says why it fits neither.
+    private func lookUp(_ key: String, types: Types, using client: JiraClient) async throws {
+        let found = try await client.search(jql: "key = \(Self.quoted(key))", maxResults: 1)
+        if Task.isCancelled { return }
+        upperResults = []
+        standardResults = []
+        searchError = nil
+        guard let match = found.issues.first else {
+            keyProblem = "There's no \(key), or you can't see it."
+            return
+        }
+        let matchLevel = match.fields.issueType.hierarchyLevel ?? 0
+        let matchType = match.fields.issueType.name
+        if match.key == issue.key {
+            keyProblem = "A ticket can't be its own parent."
+        } else if offersUpper, matchLevel == level + 1 {
+            keyProblem = nil
+            upperResults = [match]
+        } else if matchLevel == 0, offersSubtask, types.subtaskTypeID != nil {
+            let matchProject = String(match.key.prefix { $0 != "-" })
+            if matchProject == issue.projectKey {
+                keyProblem = nil
+                standardResults = [match]
+            } else {
+                keyProblem = "\(match.key) is in another project. \(issue.key) can't move to \(matchProject) from here."
+            }
+        } else if matchLevel == 0, level == 0, !(issue.fields.subtasks ?? []).isEmpty {
+            keyProblem = "\(issue.key) has sub-tasks of its own, so it can't become a sub-task of \(match.key)."
+        } else {
+            keyProblem = "\(match.key) is \(Self.withArticle(matchType)), which can't be the parent of \(Self.withArticle(typeName))."
+        }
+    }
+
+    private func loadTypes(using client: JiraClient) async throws -> Types {
+        if let types { return types }
+        let detail = try await client.projectDetail(key: issue.projectKey)
+        let all = detail.issueTypes
+        let subtaskTypes = all.filter(\.subtask)
+        // The usual name first, if there are several.
+        let subtaskType = subtaskTypes.first { ["sub-task", "subtask"].contains($0.name.lowercased()) } ?? subtaskTypes.first
+        let loaded = Types(
+            upper: all.filter { !$0.subtask && ($0.hierarchyLevel ?? 0) == level + 1 }.map(\.name),
+            standard: all.filter { !$0.subtask && ($0.hierarchyLevel ?? 0) == 0 }.map(\.name),
+            subtaskTypeID: subtaskType?.id
+        )
+        types = loaded
+        return loaded
+    }
+
+    /// "an Epic", "a Story".
+    private static func withArticle(_ name: String) -> String {
+        ("aeiou".contains(name.lowercased().first ?? "x") ? "an " : "a ") + name
+    }
+
+    /// A JQL string literal.
+    private static func quoted(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+
+    /// The typed text without the characters JQL's text search treats as syntax.
+    private static func searchWords(_ text: String) -> String {
+        let syntax = Set("+-&|!(){}[]^~*?:\\/\"'")
+        return String(text.map { syntax.contains($0) ? " " : $0 })
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private func choose(_ choice: ParentChoice) async {
+        guard saving == nil else { return }
+        if case .parent(let key) = choice, key == currentKey {
+            isPresented = false
+            return
+        }
+        if case .subtask(of: let key, _) = choice, key == currentKey, isSubtask {
+            isPresented = false
+            return
+        }
+        saving = choice
+        saveError = nil
+        do {
+            try await onChoose(choice)
+            isPresented = false
+        } catch {
+            saveError = "Couldn't change the parent: \(error.localizedDescription)"
+        }
+        saving = nil
+    }
+}
+
 // MARK: - Description
 
 /// The description, with Edit to rewrite it as wiki markup.

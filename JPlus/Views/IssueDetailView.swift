@@ -352,8 +352,9 @@ private struct IssueDetailsPane: View {
                     field("Type") { IssueTypeBadge(name: fields.issueType.name) }
                     // Always shown, so a priority can be set on an issue without one.
                     field("Priority") { IssuePriorityField(issue: issue, onChanged: onChanged) }
-                    if let parent = fields.parent {
-                        field("Parent") { ParentCard(parent: parent, onOpen: onOpenIssue) }
+                    // Shown without a parent only where one can be added, so not on every epic.
+                    if fields.parent != nil || IssueParentField.canAddParent(to: issue) {
+                        field("Parent") { IssueParentField(issue: issue, onOpen: onOpenIssue, onChanged: onChanged) }
                     }
                     // Always shown, so a version can be added to an issue without one.
                     field("Fix versions") { FixVersionsField(issue: issue, onChanged: onChanged) }
@@ -1062,6 +1063,61 @@ private struct ParentBreadcrumb: View {
         .onHover { isHovered = $0 }
         .help("Open parent \(parent.key)")
         .contextMenu { IssueKeyMenu(key: parent.key, onOpen: onOpen) }
+    }
+}
+
+/// The parent card with a pencil to change or remove it, or None to add one:
+/// an epic, or another issue to become a sub-task of.
+private struct IssueParentField: View {
+    let issue: JiraIssue
+    let onOpen: (String) -> Void
+    let onChanged: () async -> Void
+
+    @Environment(SessionStore.self) private var session
+    @State private var isEditing = false
+
+    /// Standard issues, which can go under an epic or another issue. Epics
+    /// rarely have a level above them, so None isn't offered there.
+    static func canAddParent(to issue: JiraIssue) -> Bool {
+        !issue.fields.issueType.isEpicLevel
+    }
+
+    var body: some View {
+        if let parent = issue.fields.parent {
+            HStack(alignment: .top, spacing: 4) {
+                ParentCard(parent: parent, onOpen: onOpen)
+                Button { isEditing = true } label: {
+                    Image(systemName: "pencil")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("Change parent")
+                .popover(isPresented: $isEditing, arrowEdge: .leading) { picker }
+            }
+        } else {
+            EditableFieldButton(help: "Add to an epic, or make a sub-task of another issue", isEditing: $isEditing) {
+                Text("None").foregroundStyle(.secondary)
+            } editor: {
+                picker
+            }
+        }
+    }
+
+    private var picker: some View {
+        ParentPicker(issue: issue, isPresented: $isEditing) { choice in
+            guard let client = session.client else { throw JiraError.unauthorized }
+            switch choice {
+            case .parent(let key):
+                try await client.setParent(key: key, onIssue: issue.key)
+            case .remove:
+                try await client.setParent(key: nil, onIssue: issue.key)
+            case .subtask(of: let key, let typeID):
+                try await client.makeSubtask(issue.key, of: key, projectKey: issue.projectKey, subtaskTypeID: typeID)
+            }
+            await onChanged()
+        }
     }
 }
 
