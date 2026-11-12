@@ -230,6 +230,9 @@ private struct IssueContentView: View {
                 header
                 Divider()
                 DescriptionSection(issue: issue, onChanged: onChanged)
+                // Always shown, so images and videos can be added to an issue without any.
+                Divider()
+                AttachmentList(issueKey: issue.key, attachments: fields.attachments ?? [], onChanged: onChanged)
                 if !childIssues.isEmpty {
                     Divider()
                     ChildIssuesSection(
@@ -312,7 +315,7 @@ private struct IssueContentView: View {
 
 // MARK: - Details pane (right-hand column)
 
-/// Ticket fields, the Ask AI menu and attachments, shown in the right-hand column.
+/// Ticket fields and the Ask AI menu, shown in the right-hand column.
 private struct IssueDetailsPane: View {
     let issue: JiraIssue
     /// Nil until loaded, and on a site without a Team field.
@@ -380,9 +383,6 @@ private struct IssueDetailsPane: View {
                               sendTargets: sendTargets(kind: promptKind))
                 }
 
-                // Always shown, so images and videos can be added to an issue without any.
-                Divider()
-                AttachmentList(issueKey: issue.key, attachments: fields.attachments ?? [], onChanged: onChanged)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)

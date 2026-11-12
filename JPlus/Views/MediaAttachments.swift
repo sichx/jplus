@@ -31,7 +31,7 @@ struct AddMediaButtons: View {
             Task { await importPhotos(items) }
         }
         #endif
-        Button("Choose…", systemImage: "folder") { showingFileImporter = true }
+        Button("Choose…", systemImage: "paperclip") { showingFileImporter = true }
             .help("Add images or videos from files")
             .fileImporter(isPresented: $showingFileImporter, allowedContentTypes: MediaImport.pickableTypes,
                           allowsMultipleSelection: true) { result in
