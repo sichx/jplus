@@ -41,6 +41,10 @@ struct HomeView: View {
     @State private var path: [Destination] = []
     /// Stack to show once a restored sidebar item is selected, since selecting clears the stack.
     @State private var pendingPath: [Destination]?
+    /// The screen and stack New Ticket was opened from, for Cancel to go back to.
+    @State private var beforeNewTicket: (selection: SidebarItem?, path: [Destination])?
+    /// The issue just created and why some of its files didn't upload, until dismissed.
+    @State private var createdIssueUploadFailure: (key: String, message: String)?
     /// True while the last session's place is looked up at launch.
     @State private var isRestoringPlace = true
     /// Set once the sidebar's versions have loaded or failed to.
@@ -108,7 +112,10 @@ struct HomeView: View {
                     }
             }
         }
-        .onChange(of: selection) {
+        .onChange(of: selection) { previous, current in
+            if current == .newTicket, previous != .newTicket {
+                beforeNewTicket = (previous, path)
+            }
             path = pendingPath ?? []
             pendingPath = nil
             if selection != nil { hasStartPage = true }
@@ -143,6 +150,13 @@ struct HomeView: View {
             if let client = session.client, let accountID = session.currentAccountID {
                 Task { await searchIndex.prepare(client: client, accountID: accountID) }
             }
+        }
+        .alert("Created \(createdIssueUploadFailure?.key ?? "the Issue")",
+               isPresented: Binding(get: { createdIssueUploadFailure != nil },
+                                    set: { if !$0 { createdIssueUploadFailure = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text((createdIssueUploadFailure?.message ?? "") + "\n\nAdd them again from the ticket's Attachments.")
         }
         .onReceive(NotificationCenter.default.publisher(for: .jplusNewTicket)) { _ in
             selection = .newTicket
@@ -584,7 +598,7 @@ struct HomeView: View {
             SpaceIssuesView(project: project, onOpenIssue: pushIssue)
                 .id(project.key)
         case .newTicket:
-            NewTicketView(suggestedProjectKey: recentProjectKey, onCreated: pushIssue)
+            NewTicketView(suggestedProjectKey: recentProjectKey, onCreated: openCreatedIssue, onCancel: cancelNewTicket)
         case .issue(let key):
             IssueDetailView(key: key, onOpenIssue: pushIssue)
                 .id(key)
@@ -737,6 +751,28 @@ struct HomeView: View {
         // Opened from ⌘K before the start page was picked; picking it now would clear this.
         hasStartPage = true
         path.append(.issue(key))
+    }
+
+    /// Shows a just-created issue in place of the New Ticket form, so Back
+    /// doesn't lead to the emptied form.
+    private func openCreatedIssue(_ key: String, uploadFailure: String?) {
+        remember(key)
+        hasStartPage = true
+        selection = .issue(key)
+        createdIssueUploadFailure = uploadFailure.map { (key, $0) }
+    }
+
+    /// Goes back to where New Ticket was opened from, or My Issues if it
+    /// was the first thing shown.
+    private func cancelNewTicket() {
+        let previous = beforeNewTicket
+        beforeNewTicket = nil
+        if let previous, let item = previous.selection, item != .newTicket {
+            pendingPath = previous.path
+            selection = item
+        } else {
+            selection = shows(.myIssues) ? .myIssues : nil
+        }
     }
 
     private func remember(_ key: String?) {

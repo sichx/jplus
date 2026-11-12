@@ -9,7 +9,10 @@ import UniformTypeIdentifiers
 /// image), create, attach, open.
 struct NewTicketView: View {
     let suggestedProjectKey: String?
-    let onCreated: (String) -> Void
+    /// Called with the new issue's key, and with why any uploads failed.
+    let onCreated: (_ key: String, _ uploadFailure: String?) -> Void
+    /// Called after Cancel throws the draft away.
+    let onCancel: () -> Void
 
     @Environment(SessionStore.self) private var session
     @Environment(SettingsStore.self) private var settings
@@ -331,6 +334,11 @@ struct NewTicketView: View {
                 }
             }
 
+            Button("Cancel", role: .cancel, action: cancel)
+                .keyboardShortcut(.cancelAction)
+                .disabled(isCreating)
+                .help("Discard this ticket (Esc)")
+
             Button {
                 Task { await create() }
             } label: {
@@ -576,6 +584,12 @@ struct NewTicketView: View {
 
     // MARK: - Create
 
+    private func cancel() {
+        attachments.forEach { $0.discard() }
+        attachments = []
+        onCancel()
+    }
+
     private func create() async {
         guard let client = session.client, canCreate else { return }
         isCreating = true
@@ -610,20 +624,16 @@ struct NewTicketView: View {
                 failures.append("\(attachment.filename): \(error.localizedDescription)")
             }
         }
-        if !failures.isEmpty {
-            // The issue exists; report the partial failure rather than losing it.
-            // The files are kept so they can be added again from the ticket.
-            errorMessage = "Created \(created.key), but \(failures.count == 1 ? "an upload" : "\(failures.count) uploads") failed: "
-                + failures.joined(separator: "; ")
-            onCreated(created.key)
-            return
-        }
+        // The issue exists, so a failed upload is reported on it rather than here;
+        // the files can be added again from its Attachments.
+        let uploadFailure = failures.isEmpty ? nil
+            : "\(failures.count == 1 ? "An upload" : "\(failures.count) uploads") failed:\n" + failures.joined(separator: "\n")
 
         attachments.forEach { $0.discard() }
         summary = ""
         description = ""
         notes = ""
         attachments = []
-        onCreated(created.key)
+        onCreated(created.key, uploadFailure)
     }
 }
