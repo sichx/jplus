@@ -3,7 +3,7 @@ import SwiftUI
 /// Sendable column sort for issue tables (Swift 6–safe alternative to `KeyPathComparator` in `@State`).
 struct IssueSummarySortComparator: SortComparator, Hashable, Sendable {
     enum Column: Hashable, Sendable {
-        case issueType, key, summary, status, assignee, updated
+        case issueType, key, summary, status, assignee, updated, pullRequests
     }
 
     var column: Column
@@ -23,7 +23,14 @@ struct IssueSummarySortComparator: SortComparator, Hashable, Sendable {
             (lhs.fields.assignee?.displayName ?? "").localizedStandardCompare(rhs.fields.assignee?.displayName ?? "")
         case .updated:
             lhs.fields.updated.compare(rhs.fields.updated)
+        case .pullRequests:
+            // Open first; issues without pull requests last.
+            Self.compare(lhs.fields.pullRequests?.rank ?? .max, rhs.fields.pullRequests?.rank ?? .max)
         }
+    }
+
+    private static func compare(_ lhs: Int, _ rhs: Int) -> ComparisonResult {
+        lhs < rhs ? .orderedAscending : lhs > rhs ? .orderedDescending : .orderedSame
     }
 
     /// `sorted(using:)` only applies `order` for `KeyPathComparator`; custom comparators must flip here.
@@ -34,6 +41,32 @@ struct IssueSummarySortComparator: SortComparator, Hashable, Sendable {
         case .reverse:
             compare(lhs, rhs) == .orderedDescending
         }
+    }
+}
+
+/// A column of the issue table that the column picker can show or hide.
+enum IssueListColumn: String, CaseIterable, Identifiable {
+    case issueType = "type", key, summary, status, assignee, updated, pullRequests
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .issueType: "Type"
+        case .key: "Key"
+        case .summary: "Summary"
+        case .status: "Status"
+        case .assignee: "Assignee"
+        case .updated: "Updated"
+        case .pullRequests: "Pull Request"
+        }
+    }
+
+    /// Key and Summary can't be hidden.
+    var isRequired: Bool { self == .key || self == .summary }
+
+    var help: String {
+        self == .pullRequests ? "Shows when an issue in the list has a pull request" : ""
     }
 }
 
@@ -86,6 +119,25 @@ struct IssueListView<FilterAccessory: View>: View {
         }
     }
     @State private var isPickingStatuses = false
+    /// Columns hidden with the column picker, as comma-separated
+    /// `IssueListColumn` raw values. Shared by every issue list, in the
+    /// account's settings; a column not in here shows.
+    @AppStorage("issueList.hiddenColumns") private var savedHiddenColumns = ""
+    @State private var isPickingColumns = false
+
+    private var hiddenColumns: Set<IssueListColumn> {
+        Set(savedHiddenColumns.split(separator: ",").compactMap { IssueListColumn(rawValue: String($0)) })
+    }
+
+    private func isShown(_ column: IssueListColumn) -> Bool {
+        column.isRequired || !hiddenColumns.contains(column)
+    }
+
+    private func setShown(_ column: IssueListColumn, _ shown: Bool) {
+        var hidden = hiddenColumns
+        if shown { hidden.remove(column) } else { hidden.insert(column) }
+        savedHiddenColumns = IssueListColumn.allCases.filter(hidden.contains).map(\.rawValue).joined(separator: ",")
+    }
     /// Issues whose status or assignee was changed from the context menu,
     /// shown changed until the list is loaded again. Keyed by issue key.
     @State private var changedIssues: [String: IssueSummary] = [:]
@@ -242,6 +294,9 @@ struct IssueListView<FilterAccessory: View>: View {
 
             statusFilterButton
 
+            // The stacked rows on an iPhone have no columns to choose.
+            if !isCompact { columnPickerButton }
+
             if isFiltering {
                 Text("\(displayedIssues.count) of \(issues.count)")
                     .scaledFont(.caption)
@@ -284,6 +339,66 @@ struct IssueListView<FilterAccessory: View>: View {
             statusChecklist
                 .presentationCompactAdaptation(.popover)
         }
+    }
+
+    /// Opens a list of checkboxes, one per column, to choose which columns
+    /// the table shows. Key and Summary always show.
+    private var columnPickerButton: some View {
+        let hiddenCount = hiddenColumns.count
+        return Button {
+            isPickingColumns.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "tablecells")
+                Text("Columns")
+                if hiddenCount > 0 {
+                    Text("\(IssueListColumn.allCases.count - hiddenCount)/\(IssueListColumn.allCases.count)")
+                        .scaledFont(.caption)
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(hiddenCount > 0 ? Color.accentColor : Color.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help("Choose columns")
+        .accessibilityLabel("Choose columns")
+        .popover(isPresented: $isPickingColumns, arrowEdge: .bottom) {
+            columnChecklist
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var columnChecklist: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(IssueListColumn.allCases) { column in
+                let shown = isShown(column)
+                Button {
+                    setShown(column, !shown)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: shown ? "checkmark.square.fill" : "square")
+                            .foregroundStyle(shown && !column.isRequired ? Color.accentColor : Color.secondary)
+                        Text(column.title)
+                            .foregroundStyle(column.isRequired ? Color.secondary : Color.primary)
+                        Spacer(minLength: 12)
+                    }
+                    .padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(column.isRequired)
+                .help(column.isRequired ? "\(column.title) always shows" : column.help)
+                .accessibilityAddTraits(shown ? .isSelected : [])
+            }
+            Divider().padding(.vertical, 6)
+            Button("Show All") { savedHiddenColumns = "" }
+                .controlSize(.small)
+                .disabled(hiddenColumns.isEmpty)
+        }
+        .padding(12)
+        .frame(minWidth: 200)
     }
 
     private var statusChecklist: some View {
@@ -372,14 +487,20 @@ struct IssueListView<FilterAccessory: View>: View {
         return widths
     }
 
+    private var showsPullRequests: Bool {
+        displayedIssues.contains { $0.fields.pullRequests != nil }
+    }
+
     private var issueTable: some View {
         let widths = columnWidths
         return Table(displayedIssues, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("", sortUsing: IssueSummarySortComparator(column: .issueType)) { issue in
-                IssueTypeBadge(name: issue.fields.issueType.name, iconOnly: true)
+            if isShown(.issueType) {
+                TableColumn("", sortUsing: IssueSummarySortComparator(column: .issueType)) { issue in
+                    IssueTypeBadge(name: issue.fields.issueType.name, iconOnly: true)
+                }
+                // Every column but Summary fits its contents; Summary takes what's left.
+                .width(24 * textScale)
             }
-            // Every column but Summary fits its contents; Summary takes what's left.
-            .width(24 * textScale)
 
             TableColumn("Key", sortUsing: IssueSummarySortComparator(column: .key)) { issue in
                 // The system mono font whatever Settings › Font says, as the width above assumes.
@@ -391,22 +512,40 @@ struct IssueListView<FilterAccessory: View>: View {
                 Text(issue.fields.summary).lineLimit(1).help(issue.fields.summary)
             }
 
-            TableColumn("Status", sortUsing: IssueSummarySortComparator(column: .status)) { issue in
-                StatusBadge(status: issue.fields.status)
+            if isShown(.status) {
+                TableColumn("Status", sortUsing: IssueSummarySortComparator(column: .status)) { issue in
+                    StatusBadge(status: issue.fields.status)
+                }
+                .width(widths.status)
             }
-            .width(widths.status)
 
-            TableColumn("Assignee", sortUsing: IssueSummarySortComparator(column: .assignee)) { issue in
-                PersonCell(user: issue.fields.assignee)
+            if isShown(.assignee) {
+                TableColumn("Assignee", sortUsing: IssueSummarySortComparator(column: .assignee)) { issue in
+                    PersonCell(user: issue.fields.assignee)
+                }
+                .width(widths.assignee)
             }
-            .width(widths.assignee)
 
-            TableColumn("Updated", sortUsing: IssueSummarySortComparator(column: .updated)) { issue in
-                Text(issue.fields.updated, format: .relative(presentation: .named))
-                    .foregroundStyle(.secondary)
-                    .help(issue.fields.updated.formatted(date: .abbreviated, time: .shortened))
+            if isShown(.updated) {
+                TableColumn("Updated", sortUsing: IssueSummarySortComparator(column: .updated)) { issue in
+                    Text(issue.fields.updated, format: .relative(presentation: .named))
+                        .foregroundStyle(.secondary)
+                        .help(issue.fields.updated.formatted(date: .abbreviated, time: .shortened))
+                }
+                .width(widths.updated)
             }
-            .width(widths.updated)
+
+            // Only where some issue has a pull request, so sites without a
+            // code host don't get an empty column.
+            if showsPullRequests && isShown(.pullRequests) {
+                TableColumn("", sortUsing: IssueSummarySortComparator(column: .pullRequests)) { issue in
+                    if let pullRequests = issue.fields.pullRequests {
+                        PullRequestStateIcon(state: pullRequests.state)
+                            .help(pullRequests.description)
+                    }
+                }
+                .width(24 * textScale)
+            }
         }
         .contextMenu(forSelectionType: IssueSummary.ID.self) { ids in
             if let issue = issue(for: ids) {
@@ -437,6 +576,7 @@ struct IssueListView<FilterAccessory: View>: View {
     private static var sortColumns: [(IssueSummarySortComparator.Column, String)] { [
         (.updated, "Updated"), (.key, "Key"), (.summary, "Summary"),
         (.status, "Status"), (.assignee, "Assignee"), (.issueType, "Type"),
+        (.pullRequests, "Pull Request"),
     ] }
 
     /// The table's header clicks, as a menu: pick a column, or the current
@@ -585,14 +725,16 @@ private extension IssueSummary {
     func with(status: JiraIssue.Status) -> IssueSummary {
         IssueSummary(id: id, key: key, fields: Fields(
             summary: fields.summary, status: status, issueType: fields.issueType,
-            priority: fields.priority, assignee: fields.assignee, updated: .now
+            priority: fields.priority, assignee: fields.assignee, updated: .now,
+            pullRequests: fields.pullRequests
         ))
     }
 
     func with(assignee: JiraUser?) -> IssueSummary {
         IssueSummary(id: id, key: key, fields: Fields(
             summary: fields.summary, status: fields.status, issueType: fields.issueType,
-            priority: fields.priority, assignee: assignee, updated: .now
+            priority: fields.priority, assignee: assignee, updated: .now,
+            pullRequests: fields.pullRequests
         ))
     }
 }
@@ -614,6 +756,10 @@ private struct CompactIssueRow: View {
                         .scaledFont(.subheadline.monospaced())
                         .foregroundStyle(.secondary)
                     StatusBadge(status: issue.fields.status)
+                    if let pullRequests = issue.fields.pullRequests {
+                        PullRequestStateIcon(state: pullRequests.state)
+                            .scaledFont(.subheadline)
+                    }
                     Spacer(minLength: 4)
                     if let assignee = issue.fields.assignee {
                         AvatarView(user: assignee, size: 18)

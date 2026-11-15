@@ -416,7 +416,7 @@ struct VersionDetailView: View {
         let jql = await jql(hidingCompleted: hiding, assignees: assignees)
         // Toggled again while the team or status list loaded; that newer run takes over.
         guard hiding == hideCompleted, teamOnly == onlyAppTeam else { return }
-        await query.run(jql, using: client, keepingResults: true)
+        await query.run(jql, using: client, keepingResults: true, developmentFieldID: try? await session.developmentFieldID())
     }
 
     /// False only once it's known a query can't say what the toggles show:

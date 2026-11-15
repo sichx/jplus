@@ -2,7 +2,7 @@ import Foundation
 
 /// Branches and pull requests linked to an issue, as in Jira's Development
 /// panel. They come from code hosts such as GitHub for Jira.
-struct IssueDevelopment: Sendable, Equatable {
+nonisolated struct IssueDevelopment: Sendable, Equatable {
     var branches: [Branch] = []
     var pullRequests: [PullRequest] = []
 
@@ -102,5 +102,79 @@ nonisolated struct DevStatusDetailResponse: Decodable, Sendable {
 
     nonisolated struct Ref: Decodable, Sendable {
         let branch: String?
+    }
+}
+
+/// The pull-request part of Jira's Development field, as returned in a
+/// search: how many pull requests an issue has and their overall state.
+/// Jira gives one state (the most active one) and how many are in it,
+/// not a count for every state.
+nonisolated struct PullRequestSummary: Hashable, Sendable {
+    let state: IssueDevelopment.PullRequest.Status
+    let count: Int
+    /// How many of `count` are in `state`.
+    let stateCount: Int
+
+    /// Open first, then draft, merged and closed; for sorting.
+    var rank: Int {
+        switch state {
+        case .open: 0
+        case .draft: 1
+        case .merged: 2
+        case .declined: 3
+        case .unknown: 4
+        }
+    }
+
+    /// "2 merged pull requests", or "3 pull requests, 1 open".
+    var description: String {
+        let stateWord = state.title.lowercased()
+        if stateCount == count {
+            return "\(count) \(stateWord) pull request\(count == 1 ? "" : "s")"
+        }
+        return "\(count) pull requests, \(stateCount) \(stateWord)"
+    }
+
+    /// Reads the Development field's value, which looks like
+    /// `{pullrequest={dataType=pullrequest, state=OPEN, stateCount=1}, json={…}}`.
+    /// Nil when the issue has no pull requests.
+    init?(developmentField raw: String) {
+        if let parsed = Self.fromJSON(raw) ?? Self.fromText(raw) {
+            self = parsed
+        } else {
+            return nil
+        }
+    }
+
+    private init(state: IssueDevelopment.PullRequest.Status, count: Int, stateCount: Int) {
+        self.state = state
+        self.count = count
+        self.stateCount = stateCount
+    }
+
+    /// The `json={…}` part, which has the total as well as the state.
+    private static func fromJSON(_ raw: String) -> PullRequestSummary? {
+        guard let start = raw.range(of: "json=") else { return nil }
+        var json = raw[start.upperBound...]
+        // The JSON is the last value in the outer braces.
+        if json.hasSuffix("}") { json = json.dropLast() }
+        guard let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cached = root["cachedValue"] as? [String: Any],
+              let summary = cached["summary"] as? [String: Any],
+              let pullRequests = summary["pullrequest"] as? [String: Any],
+              let overall = pullRequests["overall"] as? [String: Any],
+              let count = overall["count"] as? Int, count > 0
+        else { return nil }
+        let stateCount = overall["stateCount"] as? Int ?? count
+        return PullRequestSummary(state: .init(raw: overall["state"] as? String), count: count, stateCount: stateCount)
+    }
+
+    /// The `pullrequest={…}` part, for when the JSON is missing.
+    private static func fromText(_ raw: String) -> PullRequestSummary? {
+        guard let match = raw.firstMatch(of: /pullrequest=\{[^}]*state=(\w+)[^}]*stateCount=(\d+)/),
+              let stateCount = Int(match.2), stateCount > 0
+        else { return nil }
+        return PullRequestSummary(state: .init(raw: String(match.1)), count: stateCount, stateCount: stateCount)
     }
 }

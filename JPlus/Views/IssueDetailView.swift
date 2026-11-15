@@ -1360,15 +1360,14 @@ private struct PullRequestRow: View {
             if let url = pullRequest.url { openURL(url) }
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "arrow.triangle.pull")
-                    .foregroundStyle(statusColor)
+                PullRequestStateIcon(state: pullRequest.status)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(pullRequest.title)
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
                     HStack(spacing: 6) {
-                        PullRequestStatusBadge(status: pullRequest.status, color: statusColor)
+                        PullRequestStatusBadge(status: pullRequest.status, color: PullRequestStateIcon.color(for: pullRequest.status))
                         Text(subtitle)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -1398,14 +1397,6 @@ private struct PullRequestRow: View {
         [pullRequest.repositoryName, pullRequest.number].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    private var statusColor: Color {
-        switch pullRequest.status {
-        case .open: .green
-        case .merged: .purple
-        case .declined: .red
-        case .draft, .unknown: .secondary
-        }
-    }
 }
 
 private struct PullRequestStatusBadge: View {

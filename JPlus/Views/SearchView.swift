@@ -141,7 +141,7 @@ struct JQLSearchView: View {
         let trimmed = jql.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         remember(trimmed)
-        await query.run(trimmed, using: client)
+        await query.run(trimmed, using: client, developmentFieldID: try? await session.developmentFieldID())
     }
 
     private func loadMore() async {

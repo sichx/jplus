@@ -35,14 +35,17 @@ final class IssueQuery {
 
     private var nextPageToken: String?
     private var generation = 0
+    /// Asked for with each page, so issues come with their pull requests.
+    private var developmentFieldID: String?
 
     /// Replaces the current results with the first page of `jql`. With
     /// `keepingResults`, the current issues stay listed until that page
     /// arrives, so a list can reload in place instead of flashing empty.
-    func run(_ jql: String, using client: JiraClient, keepingResults: Bool = false) async {
+    func run(_ jql: String, using client: JiraClient, keepingResults: Bool = false, developmentFieldID: String? = nil) async {
         generation += 1
         let myGeneration = generation
         self.jql = jql
+        self.developmentFieldID = developmentFieldID
         if !keepingResults { issues = [] }
         nextPageToken = nil
         hasMore = false
@@ -64,7 +67,8 @@ final class IssueQuery {
                 try await fetchInitialPages(generation: generation, using: client)
             } else {
                 let page = try await client.search(
-                    jql: jql, maxResults: Self.loadMorePageSize, nextPageToken: nextPageToken
+                    jql: jql, maxResults: Self.loadMorePageSize, nextPageToken: nextPageToken,
+                    developmentFieldID: developmentFieldID
                 )
                 guard generation == self.generation else { return }
                 issues += page.issues
@@ -90,7 +94,7 @@ final class IssueQuery {
         while accumulated.count < Self.initialPageSize {
             let remaining = Self.initialPageSize - accumulated.count
             let maxResults = min(remaining, Self.jiraListFieldsPageCap)
-            let page = try await client.search(jql: jql, maxResults: maxResults, nextPageToken: token)
+            let page = try await client.search(jql: jql, maxResults: maxResults, nextPageToken: token, developmentFieldID: developmentFieldID)
             guard generation == self.generation else { return }
             accumulated += page.issues
             token = page.nextPageToken

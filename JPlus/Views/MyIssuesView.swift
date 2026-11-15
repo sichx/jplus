@@ -63,6 +63,6 @@ struct MyIssuesView: View {
 
     private func run() async {
         guard let client = session.client else { return }
-        await query.run(jql, using: client)
+        await query.run(jql, using: client, developmentFieldID: try? await session.developmentFieldID())
     }
 }

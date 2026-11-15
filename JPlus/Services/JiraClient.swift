@@ -80,11 +80,13 @@ struct JiraClient: Sendable {
         )
     }
 
-    /// Runs a JQL query. Pass the previous page's `nextPageToken` to continue.
-    func search(jql: String, maxResults: Int = 50, nextPageToken: String? = nil) async throws -> IssueSearchPage {
+    /// Runs a JQL query. Pass the previous page's `nextPageToken` to continue,
+    /// and the Development field's id to have each issue's pull requests.
+    func search(jql: String, maxResults: Int = 50, nextPageToken: String? = nil, developmentFieldID: String? = nil) async throws -> IssueSearchPage {
+        let fields = IssueSummary.requestedFields + [developmentFieldID].compactMap { $0 }
         var query = [
             URLQueryItem(name: "jql", value: jql),
-            URLQueryItem(name: "fields", value: IssueSummary.requestedFields.joined(separator: ",")),
+            URLQueryItem(name: "fields", value: fields.joined(separator: ",")),
             URLQueryItem(name: "maxResults", value: String(maxResults)),
         ]
         if let nextPageToken {
@@ -333,6 +335,18 @@ struct JiraClient: Sendable {
         }
         let fields: [Field] = try await get("/rest/api/3/field")
         return fields.first { $0.schema?.custom == "com.atlassian.jira.plugin.system.customfieldtypes:atlassian-team" }?.id
+    }
+
+    /// The id of the site's Development field (linked branches and pull
+    /// requests), such as "customfield_10000", or nil if the site has none.
+    func developmentFieldID() async throws -> String? {
+        struct Field: Decodable {
+            let id: String
+            let schema: Schema?
+            struct Schema: Decodable { let custom: String? }
+        }
+        let fields: [Field] = try await get("/rest/api/3/field")
+        return fields.first { $0.schema?.custom?.hasSuffix(":devsummarycf") == true }?.id
     }
 
     /// The team an issue is given to in its Team field, if any.

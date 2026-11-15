@@ -26,6 +26,7 @@ final class SessionStore {
     private var cachedOrgId: String?
     /// Nil until looked up; `.some(nil)` once the site is known to have no Team field.
     private var cachedTeamFieldID: String??
+    private var cachedDevelopmentFieldID: String??
     /// Keyed by lowercased team name.
     private var cachedTeamMemberIDs: [String: Set<String>] = [:]
 
@@ -85,6 +86,15 @@ final class SessionStore {
         guard let client else { throw JiraError.unauthorized }
         let id = try await client.teamFieldID()
         cachedTeamFieldID = .some(id)
+        return id
+    }
+
+    /// The site's Development field id, fetched once; nil where there's none.
+    func developmentFieldID() async throws -> String? {
+        if let cachedDevelopmentFieldID { return cachedDevelopmentFieldID }
+        guard let client else { throw JiraError.unauthorized }
+        let id = try await client.developmentFieldID()
+        cachedDevelopmentFieldID = .some(id)
         return id
     }
 

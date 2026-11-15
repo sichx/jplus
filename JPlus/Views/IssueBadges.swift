@@ -149,3 +149,24 @@ struct FlowLayout: Layout {
         return rows.filter { !$0.indices.isEmpty }
     }
 }
+
+/// A pull request's state as a coloured icon: green when open, grey for a
+/// draft, purple when merged and red when closed.
+struct PullRequestStateIcon: View {
+    let state: IssueDevelopment.PullRequest.Status
+
+    var body: some View {
+        Image(systemName: state == .merged ? "arrow.triangle.merge" : "arrow.triangle.pull")
+            .foregroundStyle(Self.color(for: state))
+            .accessibilityLabel("\(state.title) pull request")
+    }
+
+    static func color(for state: IssueDevelopment.PullRequest.Status) -> Color {
+        switch state {
+        case .open: .green
+        case .merged: .purple
+        case .declined: .red
+        case .draft, .unknown: .secondary
+        }
+    }
+}
