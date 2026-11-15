@@ -22,6 +22,8 @@ struct IssueDetailView: View {
     @State private var comments: [JiraIssue.Comment]?
     /// The Team field; nil until loaded, and on a site without one.
     @State private var team: IssueTeamField?
+    /// Linked branches and pull requests; nil until loaded, or if the site has none.
+    @State private var development: IssueDevelopment?
     @State private var previewURL: URL?
     @State private var attachmentError: String?
     @AppStorage("showIssueDetailsPane") private var showsDetailsColumn = true
@@ -61,7 +63,7 @@ struct IssueDetailView: View {
         .adaptiveInspector(isPresented: showDetailsPane) {
             Group {
                 if case .loaded(let issue) = phase {
-                    IssueDetailsPane(issue: issue, team: team, onOpenIssue: onOpenIssue, onChanged: reloadIssue)
+                    IssueDetailsPane(issue: issue, team: team, development: development, onOpenIssue: onOpenIssue, onChanged: reloadIssue)
                 } else {
                     Color.clear
                 }
@@ -159,6 +161,14 @@ struct IssueDetailView: View {
         if let fetched = await fetchedComments { comments = fetched }
         if let fetched = await fetchedChildren { children = fetched }
         if let fetched = await fetchedExtras { extras = fetched }
+        if case .loaded(let issue) = phase, let fetched = await loadDevelopment(issueID: issue.id, using: client) {
+            development = fetched
+        }
+    }
+
+    /// Nil if dev-status fails, so a refresh keeps what's already shown.
+    private func loadDevelopment(issueID: String, using client: JiraClient) async -> IssueDevelopment? {
+        try? await client.development(issueID: issueID)
     }
 
     /// Re-reads the issue after an edit, keeping the page on screen.
@@ -258,7 +268,6 @@ private struct IssueContentView: View {
                 CommentsSection(issue: issue, comments: comments, onChanged: onChanged)
             }
             .padding(24)
-            .frame(maxWidth: 820, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -320,6 +329,8 @@ private struct IssueDetailsPane: View {
     let issue: JiraIssue
     /// Nil until loaded, and on a site without a Team field.
     let team: IssueTeamField?
+    /// Linked branches and pull requests; nil until loaded.
+    let development: IssueDevelopment?
     let onOpenIssue: (String) -> Void
     /// Called after an edit is saved, to reload the issue.
     let onChanged: () async -> Void
@@ -340,12 +351,9 @@ private struct IssueDetailsPane: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Text("Details").scaledFont(.headline)
-                    Spacer()
+                CollapsibleSection("Details", storageKey: "issuePane.details") {
                     IssueStatusButton(issue: issue, onChanged: onChanged)
-                }
-
+                } content: {
                 VStack(alignment: .leading, spacing: 14) {
                     field("Assignee") { IssuePersonField(issue: issue, role: .assignee, onChanged: onChanged) }
                     field("Reporter") { IssuePersonField(issue: issue, role: .reporter, onChanged: onChanged) }
@@ -376,12 +384,22 @@ private struct IssueDetailsPane: View {
                     }
                 }
                 .scaledFont(.callout)
+                }
+
+                if let development, !development.isEmpty {
+                    Divider()
+                    CollapsibleSection("Development", storageKey: "issuePane.development") {
+                        DevelopmentSection(development: development)
+                    }
+                }
 
                 if let promptKind = IssueAIPromptKind.forIssue(issue) {
                     Divider()
-                    AskAIMenu(kind: promptKind,
-                              onCopy: { copyPrompt(kind: promptKind) },
-                              sendTargets: sendTargets(kind: promptKind))
+                    CollapsibleSection("AI", storageKey: "issuePane.ai") {
+                        AskAIMenu(kind: promptKind,
+                                  onCopy: { copyPrompt(kind: promptKind) },
+                                  sendTargets: sendTargets(kind: promptKind))
+                    }
                 }
 
             }
@@ -1250,9 +1268,6 @@ private struct AskAIMenu: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Actions")
-                .scaledFont(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
             Menu {
                 Button("Copy Prompt", systemImage: "doc.on.doc", action: onCopy)
                 ForEach(sendTargets) { target in
@@ -1265,6 +1280,185 @@ private struct AskAIMenu: View {
             .menuStyle(.button)
             .buttonStyle(.bordered)
             .help("\(kind.summary): copy a prompt for an AI agent, or start a coding agent with it")
+        }
+    }
+}
+
+/// A details-pane section with a headline title that collapses when clicked.
+/// Whether it's collapsed is remembered across tickets and launches.
+private struct CollapsibleSection<Accessory: View, Content: View>: View {
+    let title: String
+    let accessory: Accessory
+    let content: Content
+
+    @AppStorage private var isCollapsed: Bool
+
+    init(_ title: String, storageKey: String,
+         @ViewBuilder accessory: () -> Accessory = { EmptyView() },
+         @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.accessory = accessory()
+        self.content = content()
+        _isCollapsed = AppStorage(wrappedValue: false, storageKey + ".collapsed")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { isCollapsed.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .scaledFont(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                        Text(title).scaledFont(.headline)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isCollapsed ? "Show \(title)" : "Hide \(title)")
+                accessory
+            }
+            if !isCollapsed {
+                content
+            }
+        }
+    }
+}
+
+/// Branches and pull requests linked to the issue, each opening on its code host.
+private struct DevelopmentSection: View {
+    let development: IssueDevelopment
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !development.pullRequests.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(development.pullRequests) { PullRequestRow(pullRequest: $0) }
+                }
+            }
+            if !development.branches.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(development.branches) { BranchRow(branch: $0) }
+                }
+            }
+        }
+        .scaledFont(.callout)
+    }
+}
+
+private struct PullRequestRow: View {
+    let pullRequest: IssueDevelopment.PullRequest
+
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        Button {
+            if let url = pullRequest.url { openURL(url) }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "arrow.triangle.pull")
+                    .foregroundStyle(statusColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(pullRequest.title)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    HStack(spacing: 6) {
+                        PullRequestStatusBadge(status: pullRequest.status, color: statusColor)
+                        Text(subtitle)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .scaledFont(.caption)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(pullRequest.url == nil)
+        .help(pullRequest.url?.absoluteString ?? "")
+        .contextMenu {
+            if let url = pullRequest.url {
+                Button("Open Pull Request") { openURL(url) }
+                Button("Copy Link") { Clipboard.copy(url.absoluteString) }
+            }
+            if let branch = pullRequest.sourceBranch {
+                Button("Copy Branch Name") { Clipboard.copy(branch) }
+            }
+        }
+    }
+
+    private var subtitle: String {
+        [pullRequest.repositoryName, pullRequest.number].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private var statusColor: Color {
+        switch pullRequest.status {
+        case .open: .green
+        case .merged: .purple
+        case .declined: .red
+        case .draft, .unknown: .secondary
+        }
+    }
+}
+
+private struct PullRequestStatusBadge: View {
+    let status: IssueDevelopment.PullRequest.Status
+    let color: Color
+
+    var body: some View {
+        Text(status.title.uppercased())
+            .scaledFont(.caption2.weight(.semibold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(color.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+            .foregroundStyle(color)
+    }
+}
+
+private struct BranchRow: View {
+    let branch: IssueDevelopment.Branch
+
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        Button {
+            if let url = branch.url { openURL(url) }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "arrow.branch")
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(branch.name)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    if !branch.repositoryName.isEmpty {
+                        Text(branch.repositoryName)
+                            .scaledFont(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(branch.url == nil)
+        .help(branch.url?.absoluteString ?? "")
+        .contextMenu {
+            Button("Copy Branch Name") { Clipboard.copy(branch.name) }
+            if let url = branch.url {
+                Button("Open Branch") { openURL(url) }
+                Button("Copy Link") { Clipboard.copy(url.absoluteString) }
+            }
         }
     }
 }

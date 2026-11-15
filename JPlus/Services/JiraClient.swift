@@ -747,6 +747,75 @@ struct JiraClient: Sendable {
         return extras
     }
 
+    /// Branches and pull requests linked to an issue (Jira's Development panel).
+    /// The summary says which code hosts (GitHub, Bitbucket…) have data; the
+    /// detail is then read per host. A host whose detail fails is left out.
+    func development(issueID: String) async throws -> IssueDevelopment {
+        let summary: DevStatusSummaryResponse = try await get(
+            "/rest/dev-status/latest/issue/summary",
+            query: [URLQueryItem(name: "issueId", value: issueID)]
+        )
+        func hosts(_ item: DevStatusSummaryResponse.Item?) -> [String] {
+            (item?.byInstanceType ?? [:]).filter { ($0.value.count ?? 0) > 0 }.map(\.key).sorted()
+        }
+        var requests: [(host: String, dataType: String)] = []
+        requests += hosts(summary.summary?.pullrequest).map { ($0, "pullrequest") }
+        requests += hosts(summary.summary?.branch).map { ($0, "branch") }
+        guard !requests.isEmpty else { return IssueDevelopment() }
+
+        let details = await withTaskGroup(of: DevStatusDetailResponse?.self) { group in
+            for request in requests {
+                group.addTask {
+                    try? await self.get("/rest/dev-status/latest/issue/detail", query: [
+                        URLQueryItem(name: "issueId", value: issueID),
+                        URLQueryItem(name: "applicationType", value: request.host),
+                        URLQueryItem(name: "dataType", value: request.dataType),
+                    ])
+                }
+            }
+            var result: [DevStatusDetailResponse] = []
+            for await detail in group { if let detail { result.append(detail) } }
+            return result
+        }
+
+        var development = IssueDevelopment()
+        var seenBranches = Set<String>()
+        var seenPullRequests = Set<String>()
+        for detail in details.flatMap({ $0.detail ?? [] }) {
+            for branch in detail.branches ?? [] {
+                guard let name = branch.name, !name.isEmpty else { continue }
+                let item = IssueDevelopment.Branch(
+                    name: name,
+                    url: branch.url.flatMap(URL.init(string:)),
+                    repositoryName: branch.repository?.name ?? ""
+                )
+                if seenBranches.insert(item.id).inserted { development.branches.append(item) }
+            }
+            for pr in detail.pullRequests ?? [] {
+                guard let number = pr.id else { continue }
+                let item = IssueDevelopment.PullRequest(
+                    number: number,
+                    title: pr.name ?? number,
+                    url: pr.url.flatMap(URL.init(string:)),
+                    status: .init(raw: pr.status),
+                    repositoryName: pr.repositoryName ?? "",
+                    sourceBranch: pr.source?.branch,
+                    lastUpdate: pr.lastUpdate.flatMap(JiraDateParser.parse)
+                )
+                if seenPullRequests.insert(item.id).inserted { development.pullRequests.append(item) }
+            }
+        }
+        // Open ones first, then the most recently updated.
+        development.pullRequests.sort { a, b in
+            let aOpen = a.status == .open || a.status == .draft
+            let bOpen = b.status == .open || b.status == .draft
+            if aOpen != bOpen { return aOpen }
+            return (a.lastUpdate ?? .distantPast) > (b.lastUpdate ?? .distantPast)
+        }
+        development.branches.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return development
+    }
+
     /// An attachment's bytes.
     func attachmentContent(id: String) async throws -> Data {
         try await attachmentData("content", id: id, timeout: 120)
