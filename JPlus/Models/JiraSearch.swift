@@ -47,14 +47,16 @@ struct IssueSummary: Decodable, Identifiable, Hashable, Sendable {
         /// From the Development field, when the search asked for it and the
         /// issue has pull requests.
         var pullRequests: PullRequestSummary? = nil
+        /// The parent's key: the issue a sub-task belongs to, or a story's epic.
+        var parentKey: String? = nil
 
         enum CodingKeys: String, CodingKey {
-            case summary, status, priority, assignee, updated
+            case summary, status, priority, assignee, updated, parent
             case issueType = "issuetype"
         }
     }
 
-    static let requestedFields = ["summary", "status", "issuetype", "priority", "assignee", "updated"]
+    static let requestedFields = ["summary", "status", "issuetype", "priority", "assignee", "updated", "parent"]
 }
 
 // In an extension, so the memberwise init stays.
@@ -74,6 +76,7 @@ extension IssueSummary.Fields {
         priority = try container.decodeIfPresent(JiraIssue.Priority.self, forKey: .priority)
         assignee = try container.decodeIfPresent(JiraUser.self, forKey: .assignee)
         updated = try container.decode(Date.self, forKey: .updated)
+        parentKey = (try? container.decodeIfPresent(JiraIssue.IssueRef.self, forKey: .parent))?.key
         // The Development field's id differs by site, and it's the only
         // custom field these searches ask for.
         let custom = try decoder.container(keyedBy: AnyKey.self)

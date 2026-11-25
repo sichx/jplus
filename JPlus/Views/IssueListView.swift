@@ -124,6 +124,15 @@ struct IssueListView<FilterAccessory: View>: View {
     /// account's settings; a column not in here shows.
     @AppStorage("issueList.hiddenColumns") private var savedHiddenColumns = ""
     @State private var isPickingColumns = false
+    /// Shows each issue under its parent (a sub-task under its issue, a story
+    /// under its epic) when the parent is in the list too. Shared by every
+    /// issue list, like the columns.
+    @AppStorage("issueList.grouped") private var isGrouped = false
+    /// Parents whose children are folded away, by key. Everything starts open.
+    @State private var collapsedParents: Set<String> = []
+    /// Parents of listed issues that the list itself doesn't have, fetched
+    /// while grouped so their children have something to sit under. By key.
+    @State private var fetchedParents: [String: IssueSummary] = [:]
 
     private var hiddenColumns: Set<IssueListColumn> {
         Set(savedHiddenColumns.split(separator: ",").compactMap { IssueListColumn(rawValue: String($0)) })
@@ -203,9 +212,157 @@ struct IssueListView<FilterAccessory: View>: View {
     }
 
     /// `Table`'s `sortOrder` binding drives header indicators and clicks; row order must be applied locally.
-    private var displayedIssues: [IssueSummary] {
+    private var sortedIssues: [IssueSummary] {
         guard let active = sortOrder.first else { return filteredIssues }
         return filteredIssues.sorted { active.orders($0, before: $1) }
+    }
+
+    /// The rows on screen: sorted, or when grouped, each parent followed by
+    /// its open children.
+    private var displayedIssues: [IssueSummary] {
+        outline?.rows ?? sortedIssues
+    }
+
+    /// The grouped list as rows in order, with how deep each one sits and
+    /// how many children it has. Nil when not grouped.
+    private struct Outline {
+        var rows: [IssueSummary] = []
+        var depth: [String: Int] = [:]
+        var childCount: [String: Int] = [:]
+        /// Parents shown only to hold their children: not in the list, or
+        /// hidden by the filters. Dimmed, and not counted.
+        var contextKeys: Set<String> = []
+
+        var maxDepth: Int { depth.values.max() ?? 0 }
+        var hasParents: Bool { childCount.values.contains { $0 > 0 } }
+    }
+
+    private var outline: Outline? {
+        guard isGrouped else { return nil }
+        let sorted = sortedIssues
+        let keys = Set(sorted.map(\.key))
+        let available = contextParents
+        // Children keep the sort order among themselves. An issue whose
+        // parent isn't shown gets that parent as a dimmed header, placed
+        // where its first child would be; failing that, it sits at the top.
+        var children: [String: [IssueSummary]] = [:]
+        var roots: [IssueSummary] = []
+        var outline = Outline()
+        for issue in sorted {
+            guard let parent = issue.fields.parentKey, parent != issue.key else {
+                roots.append(issue)
+                continue
+            }
+            if keys.contains(parent) {
+                children[parent, default: []].append(issue)
+            } else if let header = available[parent] {
+                if outline.contextKeys.insert(parent).inserted { roots.append(header) }
+                children[parent, default: []].append(issue)
+            } else {
+                roots.append(issue)
+            }
+        }
+        var visited: Set<String> = []
+        func visit(_ issue: IssueSummary, depth: Int) {
+            guard visited.insert(issue.key).inserted else { return }
+            let kids = children[issue.key] ?? []
+            outline.rows.append(issue)
+            outline.depth[issue.key] = depth
+            outline.childCount[issue.key] = kids.count
+            guard !collapsedParents.contains(issue.key) else { return }
+            for kid in kids { visit(kid, depth: depth + 1) }
+        }
+        for root in roots { visit(root, depth: 0) }
+        return outline
+    }
+
+    /// Parents that listed issues point at but the filtered list doesn't
+    /// show: from the full list when the filters hide them, else fetched.
+    private var contextParents: [String: IssueSummary] {
+        var parents = fetchedParents.mapValues { changedIssues[$0.key] ?? $0 }
+        for issue in currentIssues { parents[issue.key] = issue }
+        return parents
+    }
+
+    /// Parent keys of issues in the list that the list doesn't have at all
+    /// and haven't been fetched yet. Empty unless grouped.
+    private var missingParentKeys: [String] {
+        guard isGrouped else { return [] }
+        let present = Set(currentIssues.map(\.key))
+        let missing = Set(currentIssues.compactMap(\.fields.parentKey))
+            .subtracting(present)
+            .subtracting(fetchedParents.keys)
+        return missing.sorted()
+    }
+
+    /// Fetches the missing parents, a batch per search. A batch Jira turns
+    /// down (one key it can't find, say) is looked up a key at a time.
+    private func fetchMissingParents(_ keys: [String]) async {
+        guard !keys.isEmpty, let client = session.client else { return }
+        var found: [IssueSummary] = []
+        for start in stride(from: 0, to: keys.count, by: 100) {
+            let batch = Array(keys[start..<min(start + 100, keys.count)])
+            if let page = try? await client.search(jql: Self.keysJQL(batch), maxResults: batch.count) {
+                found += page.issues
+            } else {
+                for key in batch {
+                    guard !Task.isCancelled else { return }
+                    if let page = try? await client.search(jql: Self.keysJQL([key]), maxResults: 1) {
+                        found += page.issues
+                    }
+                }
+            }
+            guard !Task.isCancelled else { return }
+        }
+        for issue in found { fetchedParents[issue.key] = issue }
+    }
+
+    private static func keysJQL(_ keys: [String]) -> String {
+        "key in (\(keys.map { "\"\($0)\"" }.joined(separator: ",")))"
+    }
+
+    private func toggleExpanded(_ key: String) {
+        if collapsedParents.contains(key) {
+            collapsedParents.remove(key)
+        } else {
+            collapsedParents.insert(key)
+        }
+    }
+
+    /// Indentation and a disclosure chevron for a row of the grouped list.
+    @ViewBuilder
+    private func outlineLead(for issue: IssueSummary, in outline: Outline) -> some View {
+        let depth = outline.depth[issue.key] ?? 0
+        let childCount = outline.childCount[issue.key] ?? 0
+        HStack(spacing: 0) {
+            Color.clear.frame(width: CGFloat(depth) * Self.outlineIndent * textScale)
+            if childCount > 0 {
+                let expanded = !collapsedParents.contains(issue.key)
+                Button { toggleExpanded(issue.key) } label: {
+                    Image(systemName: "chevron.right")
+                        .scaledFont(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .frame(width: Self.outlineIndent * textScale)
+                        .contentShape(Rectangle())
+                }
+                // Borderless, so in an iPhone list row it takes its own taps
+                // rather than opening the issue.
+                .buttonStyle(.borderless)
+                .help(expanded ? "Hide \(childCount) child issues" : "Show \(childCount) child issues")
+                .accessibilityLabel(expanded ? "Collapse" : "Expand")
+            } else if outline.hasParents {
+                Color.clear.frame(width: Self.outlineIndent * textScale)
+            }
+        }
+    }
+
+    private static var outlineIndent: CGFloat { 16 }
+    private static var typeIconWidth: CGFloat { 24 }
+
+    /// How opaque a row is: a parent shown only to hold its children is faded.
+    private func rowOpacity(_ issue: IssueSummary, in outline: Outline?) -> Double {
+        outline?.contextKeys.contains(issue.key) == true ? 0.5 : 1
     }
 
     var body: some View {
@@ -221,7 +378,7 @@ struct IssueListView<FilterAccessory: View>: View {
                 }
             }
             .overlay {
-                if displayedIssues.isEmpty, !currentIssues.isEmpty {
+                if sortedIssues.isEmpty, !currentIssues.isEmpty {
                     Text(filterText.isEmpty ? "All \(currentIssues.count) issues are hidden by the status filter."
                                             : "No issues match the filter.")
                         .scaledFont(.callout)
@@ -232,7 +389,11 @@ struct IssueListView<FilterAccessory: View>: View {
                 }
             }
         }
-        .onChange(of: issues) { changedIssues = [:] }
+        .onChange(of: issues) {
+            changedIssues = [:]
+            fetchedParents = [:]
+        }
+        .task(id: missingParentKeys) { await fetchMissingParents(missingParentKeys) }
         .sheet(item: $editing) { edit in
             ListEditSheet(edit: edit, isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) { changed in
                 changedIssues[changed.key] = changed
@@ -297,8 +458,10 @@ struct IssueListView<FilterAccessory: View>: View {
             // The stacked rows on an iPhone have no columns to choose.
             if !isCompact { columnPickerButton }
 
+            groupToggle
+
             if isFiltering {
-                Text("\(displayedIssues.count) of \(issues.count)")
+                Text("\(sortedIssues.count) of \(issues.count)")
                     .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize()
@@ -339,6 +502,25 @@ struct IssueListView<FilterAccessory: View>: View {
             statusChecklist
                 .presentationCompactAdaptation(.popover)
         }
+    }
+
+    /// Switches between a flat list and one with each issue under its parent.
+    private var groupToggle: some View {
+        Button {
+            isGrouped.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "list.bullet.indent")
+                if !isCompact { Text("Grouped") }
+            }
+            .foregroundStyle(isGrouped ? Color.accentColor : Color.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(isGrouped ? "Show a flat list" : "Show sub-tasks under their parent")
+        .accessibilityLabel("Group under parents")
+        .accessibilityAddTraits(isGrouped ? .isSelected : [])
     }
 
     /// Opens a list of checkboxes, one per column, to choose which columns
@@ -492,29 +674,50 @@ struct IssueListView<FilterAccessory: View>: View {
     }
 
     private var issueTable: some View {
-        let widths = columnWidths
-        return Table(displayedIssues, selection: $selection, sortOrder: $sortOrder) {
-            if isShown(.issueType) {
+        let outline = outline
+        var widths = columnWidths
+        if let outline {
+            let leads = CGFloat(outline.maxDepth + (outline.hasParents ? 1 : 0))
+            widths.key += leads * Self.outlineIndent * textScale
+            // The type icon moves into the Key cell, so it indents with the key.
+            if isShown(.issueType) { widths.key += Self.typeIconWidth * textScale }
+        }
+        return Table(outline?.rows ?? sortedIssues, selection: $selection, sortOrder: $sortOrder) {
+            if isShown(.issueType) && outline == nil {
                 TableColumn("", sortUsing: IssueSummarySortComparator(column: .issueType)) { issue in
                     IssueTypeBadge(name: issue.fields.issueType.name, iconOnly: true)
+                        .opacity(rowOpacity(issue, in: outline))
                 }
                 // Every column but Summary fits its contents; Summary takes what's left.
-                .width(24 * textScale)
+                .width(Self.typeIconWidth * textScale)
             }
 
             TableColumn("Key", sortUsing: IssueSummarySortComparator(column: .key)) { issue in
-                // The system mono font whatever Settings › Font says, as the width above assumes.
-                Text(issue.key).scaledFont(.body.monospaced())
+                HStack(spacing: 0) {
+                    if let outline {
+                        outlineLead(for: issue, in: outline)
+                        if isShown(.issueType) {
+                            IssueTypeBadge(name: issue.fields.issueType.name, iconOnly: true)
+                                .frame(width: Self.typeIconWidth * textScale, alignment: .leading)
+                                .opacity(rowOpacity(issue, in: outline))
+                        }
+                    }
+                    // The system mono font whatever Settings › Font says, as the width above assumes.
+                    Text(issue.key).scaledFont(.body.monospaced())
+                        .opacity(rowOpacity(issue, in: outline))
+                }
             }
             .width(widths.key)
 
             TableColumn("Summary", sortUsing: IssueSummarySortComparator(column: .summary)) { issue in
                 Text(issue.fields.summary).lineLimit(1).help(issue.fields.summary)
+                    .opacity(rowOpacity(issue, in: outline))
             }
 
             if isShown(.status) {
                 TableColumn("Status", sortUsing: IssueSummarySortComparator(column: .status)) { issue in
                     StatusBadge(status: issue.fields.status)
+                        .opacity(rowOpacity(issue, in: outline))
                 }
                 .width(widths.status)
             }
@@ -522,6 +725,7 @@ struct IssueListView<FilterAccessory: View>: View {
             if isShown(.assignee) {
                 TableColumn("Assignee", sortUsing: IssueSummarySortComparator(column: .assignee)) { issue in
                     PersonCell(user: issue.fields.assignee)
+                        .opacity(rowOpacity(issue, in: outline))
                 }
                 .width(widths.assignee)
             }
@@ -531,6 +735,7 @@ struct IssueListView<FilterAccessory: View>: View {
                     Text(issue.fields.updated, format: .relative(presentation: .named))
                         .foregroundStyle(.secondary)
                         .help(issue.fields.updated.formatted(date: .abbreviated, time: .shortened))
+                        .opacity(rowOpacity(issue, in: outline))
                 }
                 .width(widths.updated)
             }
@@ -542,6 +747,7 @@ struct IssueListView<FilterAccessory: View>: View {
                     if let pullRequests = issue.fields.pullRequests {
                         PullRequestStateIcon(state: pullRequests.state)
                             .help(pullRequests.description)
+                            .opacity(rowOpacity(issue, in: outline))
                     }
                 }
                 .width(24 * textScale)
@@ -608,11 +814,16 @@ struct IssueListView<FilterAccessory: View>: View {
     }
 
     private var issueRows: some View {
-        List(displayedIssues) { issue in
-            Button { onOpen(issue.key) } label: {
-                CompactIssueRow(issue: issue)
+        let outline = outline
+        return List(outline?.rows ?? sortedIssues) { issue in
+            HStack(spacing: 4) {
+                if let outline { outlineLead(for: issue, in: outline) }
+                Button { onOpen(issue.key) } label: {
+                    CompactIssueRow(issue: issue)
+                        .opacity(rowOpacity(issue, in: outline))
+                }
+                .foregroundStyle(.primary)
             }
-            .foregroundStyle(.primary)
             .contextMenu {
                 editActions(for: issue)
                 Divider()
@@ -642,7 +853,7 @@ struct IssueListView<FilterAccessory: View>: View {
 
     private func issue(for ids: Set<IssueSummary.ID>) -> IssueSummary? {
         guard let id = ids.first else { return nil }
-        return currentIssues.first { $0.id == id }
+        return currentIssues.first { $0.id == id } ?? contextParents.values.first { $0.id == id }
     }
 }
 
@@ -726,7 +937,7 @@ private extension IssueSummary {
         IssueSummary(id: id, key: key, fields: Fields(
             summary: fields.summary, status: status, issueType: fields.issueType,
             priority: fields.priority, assignee: fields.assignee, updated: .now,
-            pullRequests: fields.pullRequests
+            pullRequests: fields.pullRequests, parentKey: fields.parentKey
         ))
     }
 
@@ -734,7 +945,7 @@ private extension IssueSummary {
         IssueSummary(id: id, key: key, fields: Fields(
             summary: fields.summary, status: fields.status, issueType: fields.issueType,
             priority: fields.priority, assignee: assignee, updated: .now,
-            pullRequests: fields.pullRequests
+            pullRequests: fields.pullRequests, parentKey: fields.parentKey
         ))
     }
 }
