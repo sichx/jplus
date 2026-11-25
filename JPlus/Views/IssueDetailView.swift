@@ -254,6 +254,10 @@ private struct IssueContentView: View {
                         onOpen: onOpenIssue
                     )
                 }
+                if let links = fields.issueLinks, !links.isEmpty {
+                    Divider()
+                    LinkedIssuesSection(links: links, onOpen: onOpenIssue)
+                }
                 if !extras.designs.isEmpty {
                     Divider()
                     section("Designs (\(extras.designs.count))") {
@@ -1043,6 +1047,54 @@ private struct ChildIssueRow: View {
         .onHover { isHovered = $0 }
         .help(child.summary)
         .contextMenu { IssueKeyMenu(key: child.key, onOpen: onOpen) }
+    }
+}
+
+/// Issues linked to this one, grouped by how they relate: "blocks",
+/// "is duplicated by", "relates to". Rows open the issue in the app.
+private struct LinkedIssuesSection: View {
+    let links: [JiraIssue.IssueLink]
+    let onOpen: (String) -> Void
+
+    private struct Group: Identifiable {
+        let relation: String
+        let issues: [ChildIssue]
+        var id: String { relation }
+    }
+
+    /// One group per relation, in the order Jira lists them.
+    private var groups: [Group] {
+        var order: [String] = []
+        var byRelation: [String: [ChildIssue]] = [:]
+        for link in links {
+            guard let other = link.otherIssue else { continue }
+            let relation = link.relation
+            if byRelation[relation] == nil { order.append(relation) }
+            byRelation[relation, default: []].append(ChildIssue(other))
+        }
+        return order.map { Group(relation: $0, issues: byRelation[$0] ?? []) }
+    }
+
+    var body: some View {
+        let groups = groups
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Linked issues (\(groups.reduce(0) { $0 + $1.issues.count }))").scaledFont(.headline)
+            ForEach(groups) { group in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(group.relation.prefix(1).uppercased() + group.relation.dropFirst())
+                        .scaledFont(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    VStack(spacing: 0) {
+                        ForEach(Array(group.issues.enumerated()), id: \.element.id) { index, issue in
+                            if index > 0 { Divider() }
+                            ChildIssueRow(child: issue, showsAssignee: false, onOpen: onOpen)
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
+                }
+            }
+        }
     }
 }
 

@@ -760,6 +760,30 @@ nonisolated final class DemoServer: @unchecked Sendable {
         ]]
     }
 
+    /// Links in both directions: this issue's own, and other issues' links to it.
+    private func issueLinksJSON(_ issue: DemoIssue) -> [[String: Any]] {
+        func linkType(_ name: String) -> [String: Any] {
+            let (inward, outward) = switch name {
+            case "Blocks": ("is blocked by", "blocks")
+            case "Duplicate": ("is duplicated by", "duplicates")
+            case "Cloners": ("is cloned by", "clones")
+            default: ("relates to", "relates to")
+            }
+            return ["id": name, "name": name, "inward": inward, "outward": outward]
+        }
+        var result: [[String: Any]] = []
+        for (index, link) in issue.outwardLinks.enumerated() {
+            guard let other = self.issue(link.key) else { continue }
+            result.append(["id": "\(issue.id)\(index)", "type": linkType(link.type), "outwardIssue": refJSON(other)])
+        }
+        for other in state.issues where other.key != issue.key {
+            for (index, link) in other.outwardLinks.enumerated() where link.key == issue.key {
+                result.append(["id": "\(other.id)\(index)", "type": linkType(link.type), "inwardIssue": refJSON(other)])
+            }
+        }
+        return result
+    }
+
     private func commentJSON(_ comment: DemoComment, withParent: Bool) -> [String: Any] {
         var result: [String: Any] = [
             "id": comment.id, "author": userJSON(comment.author), "updateAuthor": userJSON(comment.author),
@@ -806,6 +830,7 @@ nonisolated final class DemoServer: @unchecked Sendable {
         if let parentKey = issue.parent, let parent = self.issue(parentKey) {
             fields["parent"] = refJSON(parent)
         }
+        fields["issuelinks"] = issueLinksJSON(issue)
         if let wanted { fields = fields.filter { wanted.contains($0.key) } }
         return ["id": String(issue.id), "key": issue.key, "self": "\(DemoSite.siteURL)/rest/api/3/issue/\(issue.id)", "fields": fields]
     }

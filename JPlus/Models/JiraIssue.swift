@@ -23,12 +23,14 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
         let subtasks: [IssueRef]?
         let comment: CommentPage?
         let attachments: [Attachment]?
+        let issueLinks: [IssueLink]?
 
         enum CodingKeys: String, CodingKey {
             case summary, description, status, priority, assignee, reporter
             case created, updated, labels, components, fixVersions, parent, subtasks, comment
             case issueType = "issuetype"
             case attachments = "attachment"
+            case issueLinks = "issuelinks"
         }
     }
 
@@ -91,6 +93,30 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
                 case issueType = "issuetype"
             }
         }
+    }
+
+    /// A link to another issue, such as "blocks", "is duplicated by" or "relates to".
+    /// Jira sends one side only: `outwardIssue` when this issue is the subject
+    /// ("this blocks that"), `inwardIssue` when it's the object ("this is blocked by that").
+    struct IssueLink: Decodable, Identifiable, Hashable, Sendable {
+        let id: String
+        let type: LinkType
+        let inwardIssue: IssueRef?
+        let outwardIssue: IssueRef?
+
+        struct LinkType: Decodable, Hashable, Sendable {
+            let name: String
+            /// "is blocked by"
+            let inward: String
+            /// "blocks"
+            let outward: String
+        }
+
+        /// The issue at the other end of the link.
+        var otherIssue: IssueRef? { outwardIssue ?? inwardIssue }
+
+        /// How this issue relates to the other one, as Jira words it: "blocks", "is duplicated by".
+        var relation: String { outwardIssue != nil ? type.outward : type.inward }
     }
 
     struct CommentPage: Decodable, Hashable, Sendable {
@@ -178,6 +204,7 @@ struct JiraIssue: Decodable, Identifiable, Hashable, Sendable {
     static let requestedFields = [
         "summary", "description", "status", "issuetype", "priority", "assignee", "reporter",
         "created", "updated", "labels", "components", "fixVersions", "parent", "subtasks", "comment", "attachment",
+        "issuelinks",
     ]
 }
 

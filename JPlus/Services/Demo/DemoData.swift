@@ -67,6 +67,9 @@ nonisolated struct DemoIssue: @unchecked Sendable {
     var components: [String] = []
     var fixVersions: [String] = []
     var parent: String?
+    /// Links from this issue to others, as (link type name, other issue key):
+    /// ("Blocks", "APP-2") reads "this blocks APP-2".
+    var outwardLinks: [(type: String, key: String)] = []
     var comments: [DemoComment] = []
     var attachments: [DemoAttachment] = []
     var designs: [DemoDesign] = []
@@ -623,6 +626,16 @@ nonisolated enum DemoData {
         let questionsJSON = (try? JSONSerialization.data(withJSONObject: questions, options: [.withoutEscapingSlashes])) ?? Data()
         pages.append(DemoPage(id: "1100", title: "Product Questions", parentID: "900",
                               version: 1, body: String(decoding: questionsJSON, as: UTF8.self)))
+
+        // Links between issues, so tickets show Blocks, Duplicates and Relates.
+        func link(_ from: String, _ type: String, _ to: String) {
+            guard let index = issues.firstIndex(where: { $0.key == from }) else { return }
+            issues[index].outwardLinks.append((type, to))
+        }
+        link("APP-111", "Blocks", "APP-110")
+        link("APP-114", "Relates", "APP-110")
+        link("APP-121", "Relates", "APP-120")
+        link("APP-126", "Relates", "APP-125")
 
         return DemoState(
             users: [reviewer, maya, diego, priya, sam, lena, tom, ava],
